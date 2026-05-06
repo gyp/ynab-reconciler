@@ -54,7 +54,7 @@ class TestReconcileAccount:
         assert abs(result.adjustment_in_units - 200.0) < 0.001
         client.create_reconciliation_transaction.assert_called_once_with(
             "plan-1", "acct-1", 200_000, __import__("datetime").date.today().isoformat(),
-            payee_id=None, subtransactions=None,
+            payee_id=None, subtransactions=None, memo=None,
         )
 
     def test_creates_negative_adjustment_when_ynab_is_high(self):

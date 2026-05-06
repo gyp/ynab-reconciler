@@ -53,6 +53,10 @@ class YnabClient:
         data = self._get("/plans")
         return [Plan.from_dict(p) for p in data["data"]["plans"]]
 
+    def get_plan(self, plan_id: str) -> Plan:
+        data = self._get(f"/plans/{plan_id}")
+        return Plan.from_dict(data["data"]["plan"])
+
     # --- Payees ---
 
     def get_payees(self, plan_id: str) -> list[Payee]:
@@ -120,13 +124,14 @@ class YnabClient:
         date: str,
         payee_id: Optional[str] = None,
         subtransactions: Optional[list[dict]] = None,
+        memo: Optional[str] = None,
     ) -> Transaction:
         """Create a reconciliation adjustment transaction."""
         txn: dict = {
             "account_id": account_id,
             "date": date,
             "amount": amount_milliunits,
-            "memo": "Reconciliation adjustment",
+            "memo": memo or "Reconciliation adjustment",
             "cleared": ClearedStatus.CLEARED.value,
             "approved": True,
         }

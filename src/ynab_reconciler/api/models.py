@@ -36,6 +36,7 @@ class Plan:
     last_modified_on: Optional[str] = None
     first_month: Optional[str] = None
     last_month: Optional[str] = None
+    iso_code: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "Plan":
@@ -45,6 +46,7 @@ class Plan:
             last_modified_on=data.get("last_modified_on"),
             first_month=data.get("first_month"),
             last_month=data.get("last_month"),
+            iso_code=data.get("currency_format", {}).get("iso_code"),
         )
 
 

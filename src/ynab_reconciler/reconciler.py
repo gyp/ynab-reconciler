@@ -51,6 +51,7 @@ def reconcile_account(
     create_adjustment: bool = True,
     payee_id: Optional[str] = None,
     categories: Optional[list[Category]] = None,
+    memo: Optional[str] = None,
 ) -> AccountReconciliationResult:
     """
     Compare YNAB cleared balance against the user-supplied statement balance.
@@ -66,7 +67,7 @@ def reconcile_account(
         subtransactions = _build_subtransactions(amount_mu, categories) if categories else None
         client.create_reconciliation_transaction(
             plan_id, account.id, amount_mu, today,
-            payee_id=payee_id, subtransactions=subtransactions,
+            payee_id=payee_id, subtransactions=subtransactions, memo=memo,
         )
         adjustment_created = True
 

@@ -6,10 +6,12 @@ import sys
 from typing import Optional
 
 import click
+import requests
 from dotenv import load_dotenv
 
 from .api.client import YnabClient, YnabError
 from .api.models import Account
+from .currency import convert_currency, parse_statement_input
 from .reconciler import reconcile_account
 
 load_dotenv()
@@ -152,6 +154,8 @@ def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Opti
     try:
         client = get_client()
         accounts = client.get_accounts(plan_id)
+        plan = client.get_plan(plan_id)
+        native_iso = plan.iso_code
     except (YnabError, click.UsageError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -200,14 +204,31 @@ def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Opti
             click.echo("  Skipped.")
             continue
 
+        memo = None
         if raw == "":
             statement_balance = account.cleared_balance_in_units()
         else:
             try:
-                statement_balance = float(raw)
+                amount, input_iso = parse_statement_input(raw)
             except ValueError:
                 click.echo(f"  Invalid amount '{raw}', skipping.", err=True)
                 continue
+
+            if input_iso and native_iso and input_iso != native_iso:
+                try:
+                    converted = convert_currency(amount, input_iso, native_iso)
+                except (ValueError, requests.RequestException) as e:
+                    click.echo(f"  Currency conversion error: {e}", err=True)
+                    continue
+                rate = converted / amount
+                click.echo(
+                    f"  Converting {amount:,.2f} {input_iso} → {fmt_amount(converted)} {native_iso}"
+                    f" (rate: {rate:.4f})"
+                )
+                statement_balance = converted
+                memo = f"Reconciliation adjustment ({amount:.0f} {input_iso} @ {rate:.0f})"
+            else:
+                statement_balance = amount
 
         try:
             result = reconcile_account(
@@ -218,6 +239,7 @@ def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Opti
                 create_adjustment=not no_adjust,
                 payee_id=payee_id,
                 categories=categories,
+                memo=memo,
             )
         except YnabError as e:
             click.echo(f"  Error: {e}", err=True)
