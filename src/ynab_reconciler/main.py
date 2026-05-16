@@ -299,6 +299,19 @@ def _reconcile_one(
         else:
             statement_balance = amount
 
+    current = account.cleared_balance_in_units()
+    adjustment = statement_balance - current
+    if not no_adjust and abs(current) > 0 and abs(adjustment) / abs(current) > 0.30:
+        pct = abs(adjustment) / abs(current) * 100
+        sign = "+" if adjustment > 0 else ""
+        click.echo(
+            f"  ⚠ Large adjustment: {sign}{fmt_amount(adjustment)} "
+            f"({pct:.0f}% of current balance {fmt_amount(current)})"
+        )
+        if not click.confirm("  Proceed with this adjustment?", default=False):
+            click.echo("  Skipped.")
+            return ("skip", None)
+
     try:
         result = reconcile_account(
             client,
