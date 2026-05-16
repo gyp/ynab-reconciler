@@ -112,8 +112,8 @@ To generate a personal access token, go to your YNAB account settings and
 follow the instructions at <https://api.ynab.com/> — that page also documents
 the underlying API this tool uses.
 
-After setup, just run `ynab-reconciler reconcile` — defaults are read
-automatically.
+After setup, just run `ynab-reconciler` (shorthand for `ynab-reconciler
+reconcile`) — defaults are read automatically.
 
 ### Auth & config commands
 
@@ -159,8 +159,10 @@ ynab-reconciler accounts         --plan <plan-id>
 Once defaults are saved (via `init` or `config set`), just run:
 
 ```bash
-ynab-reconciler reconcile
+ynab-reconciler
 ```
+
+(which is shorthand for `ynab-reconciler reconcile`).
 
 To override a saved default for one run, pass a flag:
 

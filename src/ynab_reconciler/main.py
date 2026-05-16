@@ -164,8 +164,9 @@ class GroupedGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-@click.group(cls=GroupedGroup)
-def cli() -> None:
+@click.group(cls=GroupedGroup, invoke_without_command=True)
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """Reconcile YNAB accounts from the command line.
 
     Computes the adjustment as (statement balance − YNAB cleared balance) and
@@ -173,7 +174,11 @@ def cli() -> None:
     category group, weighted by each category's current balance — useful for
     spreading the gains and losses of a long-term investment account across
     the saving goals it funds.
+
+    Run without a subcommand to default to `reconcile`.
     """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(cmd_reconcile)
 
 
 @cli.command("plans")
