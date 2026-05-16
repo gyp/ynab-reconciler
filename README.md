@@ -64,30 +64,54 @@ pip install -e .
 
 ## Configure
 
-Copy the example env file and fill it in:
+The first time you run the tool, set things up interactively:
 
 ```bash
-cp .env.example .env
+ynab-reconciler init
 ```
 
-| Variable                 | Required | Purpose                                                            |
-| ------------------------ | -------- | ------------------------------------------------------------------ |
-| `YNAB_TOKEN`             | yes      | YNAB personal access token.                                        |
-| `YNAB_PLAN_ID`           | no       | Default budget (plan) ID, so you can omit `--plan`.                |
-| `YNAB_PAYEE_ID`          | no       | Default payee for adjustment transactions.                         |
-| `YNAB_CATEGORY_GROUP_ID` | no       | Default category group to split adjustments across.                |
-
-If `YNAB_PLAN_ID` (or `--plan`) is not set, the tool lists your plans and
-prompts you to pick one interactively. The same happens for the category
-group — if `YNAB_CATEGORY_GROUP_ID` (or `--category-group`) is missing, or
-points to a group that doesn't exist in the selected plan, you'll be asked to
-choose one. When there's only one candidate, it's selected automatically.
+This walks you through entering a YNAB personal access token (stored in your
+OS keychain — macOS Keychain, Linux Secret Service, or Windows Credential
+Manager) and optionally picking a default plan, category group, and payee.
 
 To generate a personal access token, go to your YNAB account settings and
 follow the instructions at <https://api.ynab.com/> — that page also documents
 the underlying API this tool uses.
 
-Once `YNAB_TOKEN` is set, you can discover the other IDs with the tool itself:
+After setup, just run `ynab-reconciler reconcile` — defaults are read
+automatically.
+
+### Auth & config commands
+
+| Command                                  | What it does                                                  |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| `auth login`                             | Store a token in the OS keychain (verified against the API).  |
+| `auth logout`                            | Remove the stored token.                                      |
+| `auth status`                            | Show whether a token is stored and which backend is in use.   |
+| `config show`                            | Print the saved defaults and config file path.                |
+| `config set <key> <value>`               | Set a default. Keys: `plan_id`, `payee_id`, `category_group_id`. |
+| `config unset <key>`                     | Remove a default.                                              |
+| `config path`                            | Print the config file path.                                    |
+
+When you pick a plan or category group interactively during `reconcile`, the
+tool offers to save it as the new default. Say yes once and the next run
+skips the prompt.
+
+### Where things live
+
+- Defaults: `~/.config/ynab-reconciler/config.toml`
+  (override with `$XDG_CONFIG_HOME`).
+- Token: OS keychain, service `ynab-reconciler`, account `default`.
+  - macOS: `security find-generic-password -s ynab-reconciler`
+  - Linux: `secret-tool lookup service ynab-reconciler username default`
+
+### Precedence
+
+For any value: **CLI flag → config file → keyring (token only) → interactive
+prompt**. Pass `--plan <id>` to override the saved default for one run
+without changing it.
+
+You can discover IDs from the CLI itself once a token is configured:
 
 ```bash
 ynab-reconciler plans
@@ -99,10 +123,11 @@ ynab-reconciler accounts         --plan <plan-id>
 ## Usage
 
 The CLI is `ynab-reconciler`. All commands take `--plan` (or fall back to
-`YNAB_PLAN_ID`).
+the saved `plan_id` default).
 
 | Command                                  | What it does                                                  |
 | ---------------------------------------- | ------------------------------------------------------------- |
+| `init`                                   | Interactive first-run setup (token + defaults).               |
 | `plans`                                  | List your budgets.                                            |
 | `payees --plan <id>`                     | List payees in a plan.                                        |
 | `category-groups --plan <id>`            | List category groups and their categories.                    |
@@ -111,13 +136,16 @@ The CLI is `ynab-reconciler`. All commands take `--plan` (or fall back to
 
 ### Reconciling
 
-The recommended invocation for the savings-goal workflow:
+Once defaults are saved (via `init` or `config set`), just run:
 
 ```bash
-ynab-reconciler reconcile \
-  --plan           $YNAB_PLAN_ID \
-  --payee          $YNAB_PAYEE_ID \
-  --category-group $YNAB_CATEGORY_GROUP_ID
+ynab-reconciler reconcile
+```
+
+To override a saved default for one run, pass a flag:
+
+```bash
+ynab-reconciler reconcile --plan <other-plan-id>
 ```
 
 For each open account, the tool prints the YNAB cleared balance and prompts

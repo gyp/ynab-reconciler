@@ -21,7 +21,7 @@ from rich.rule import Rule
 from rich.text import Text
 from rich.theme import Theme
 
-from .api.models import Account, CategoryGroup, Plan
+from .api.models import Account, CategoryGroup, Payee, Plan
 from .currency import parse_statement_input
 from .reconciler import AccountReconciliationResult
 
@@ -163,6 +163,41 @@ def select_plan(plans: list[Plan]) -> Plan:
     if answer is None:
         raise click.Abort()
     return answer
+
+
+def select_payee(payees: list[Payee]) -> Optional[Payee]:
+    """Pick a payee, or return None if the user picks 'Skip'."""
+    if not is_interactive():
+        return _fallback_pick(payees, lambda p: p.name, "Payees")
+
+    choices: list[Union[questionary.Choice, questionary.Separator]] = [
+        questionary.Choice(
+            title=_SearchableTitle(
+                [("class:answer", p.name), ("class:instruction", f"  {p.id}")]
+            ),
+            value=p,
+        )
+        for p in payees
+    ]
+    choices.append(questionary.Separator("  ─────"))
+    choices.append(
+        questionary.Choice(
+            title=_SearchableTitle(
+                [("class:instruction", "  Skip — don't set a default payee")]
+            ),
+            value=None,
+        )
+    )
+    answer = questionary.select(
+        "Select a payee",
+        choices=choices,
+        style=QUESTIONARY_STYLE,
+        qmark="❯",
+        instruction="(↑/↓ move · Enter pick · type to search)",
+        use_search_filter=True,
+        use_jk_keys=False,
+    ).ask()
+    return answer  # may be None (user picked Skip) or the Payee
 
 
 def select_category_group(groups: list[CategoryGroup]) -> CategoryGroup:
@@ -596,6 +631,97 @@ def spinner(message: str) -> Iterator[None]:
         yield
 
 
+# ─── Generic prompts / messages (used by auth & config flows) ──────────────
+
+
+def prompt_password(label: str) -> str:
+    """Hidden-input prompt for a secret. Falls back to click on non-TTY."""
+    if not is_interactive():
+        return click.prompt(label, hide_input=True, default="", show_default=False)
+    answer = questionary.password(
+        label,
+        style=QUESTIONARY_STYLE,
+        qmark="❯",
+    ).ask()
+    if answer is None:
+        raise click.Abort()
+    return answer
+
+
+def confirm(question: str, *, default: bool = True) -> bool:
+    if not is_interactive():
+        return click.confirm(question, default=default)
+    answer = questionary.confirm(
+        question,
+        default=default,
+        style=QUESTIONARY_STYLE,
+        qmark="❯",
+    ).ask()
+    if answer is None:
+        raise click.Abort()
+    return bool(answer)
+
+
+def confirm_save_default(label: str) -> bool:
+    return confirm(f"Save as default {label}?", default=True)
+
+
+def show_saved_default(label: str) -> None:
+    if not is_interactive():
+        click.echo(f"  Saved as default {label}.")
+        return
+    console.print(Text(f"  ✓ Saved as default {label}", style="success"))
+
+
+def show_first_run_banner() -> None:
+    if not is_interactive():
+        click.echo("No YNAB token configured — let's set one up.")
+        click.echo(
+            "Generate a personal access token at "
+            "https://app.ynab.com/settings/developer"
+        )
+        return
+    body = Text()
+    body.append(
+        "No YNAB token configured — let's set one up.\n", style="header"
+    )
+    body.append(
+        "Generate a personal access token at\n", style="dim"
+    )
+    body.append("https://app.ynab.com/settings/developer", style="accent")
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title=Text("Welcome", style="accent"),
+            title_align="left",
+            border_style="accent",
+            padding=(0, 2),
+        )
+    )
+
+
+def show_info(msg: str) -> None:
+    if not is_interactive():
+        click.echo(msg)
+        return
+    console.print(Text(f"  {msg}", style="dim"))
+
+
+def show_warning(msg: str) -> None:
+    if not is_interactive():
+        click.echo(f"Warning: {msg}", err=True)
+        return
+    console.print(Text(f"  ⚠ {msg}", style="warning"))
+
+
+def show_success(msg: str) -> None:
+    if not is_interactive():
+        click.echo(msg)
+        return
+    console.print(Text(f"  ✓ {msg}", style="success"))
+
+
 # Re-export for main.py
 __all__ = [
     "is_interactive",
@@ -603,6 +729,7 @@ __all__ = [
     "banner",
     "section",
     "select_plan",
+    "select_payee",
     "select_category_group",
     "select_account",
     "show_account_header",
@@ -614,4 +741,12 @@ __all__ = [
     "show_skipped",
     "show_run_summary",
     "spinner",
+    "prompt_password",
+    "confirm",
+    "confirm_save_default",
+    "show_saved_default",
+    "show_first_run_banner",
+    "show_info",
+    "show_warning",
+    "show_success",
 ]
