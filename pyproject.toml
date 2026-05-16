@@ -10,6 +10,8 @@ dependencies = [
     "click>=8.1",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    "rich>=13",
+    "questionary>=2",
 ]
 
 [project.optional-dependencies]

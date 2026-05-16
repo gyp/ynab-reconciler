@@ -10,9 +10,10 @@ import click
 import requests
 from dotenv import load_dotenv
 
+from . import ui
 from .api.client import YnabClient, YnabError
 from .api.models import Account, CategoryGroup
-from .currency import convert_currency, parse_statement_input
+from .currency import convert_currency
 from .reconciler import AccountReconciliationResult, milliunits, reconcile_account
 
 load_dotenv()
@@ -39,7 +40,8 @@ def resolve_plan_id(client: YnabClient, plan_id: Optional[str]) -> str:
             "set YNAB_PLAN_ID or pass --plan."
         )
 
-    plans = client.get_plans()
+    with ui.spinner("Fetching plans…"):
+        plans = client.get_plans()
     if not plans:
         raise click.UsageError("No plans found on this YNAB account.")
 
@@ -48,24 +50,7 @@ def resolve_plan_id(client: YnabClient, plan_id: Optional[str]) -> str:
         click.echo(f"Using the only available plan: {only.name}")
         return only.id
 
-    click.echo(f"\n{'─' * 60}")
-    click.echo("Plans:")
-    name_width = max(len(p.name) for p in plans)
-    for i, plan in enumerate(plans, 1):
-        click.echo(f"  {i:>2}. {plan.name:<{name_width}}  {plan.id}")
-    click.echo("")
-
-    while True:
-        raw = click.prompt("Select plan", default="1").strip()
-        try:
-            idx = int(raw)
-        except ValueError:
-            click.echo(f"  Invalid selection: {raw}", err=True)
-            continue
-        if not 1 <= idx <= len(plans):
-            click.echo(f"  Out of range: {idx}", err=True)
-            continue
-        return plans[idx - 1].id
+    return ui.select_plan(plans).id
 
 
 def resolve_category_group(
@@ -74,7 +59,8 @@ def resolve_category_group(
     category_group_id: Optional[str],
 ) -> CategoryGroup:
     """Return a CategoryGroup; pick interactively if id is missing or not found in plan."""
-    groups = client.get_category_groups(plan_id)
+    with ui.spinner("Fetching category groups…"):
+        groups = client.get_category_groups(plan_id)
     visible = [
         g for g in groups
         if not g.deleted and not g.hidden
@@ -102,24 +88,7 @@ def resolve_category_group(
         click.echo(f"Using the only available category group: {only.name}")
         return only
 
-    click.echo(f"\n{'─' * 60}")
-    click.echo("Category groups:")
-    name_width = max(len(g.name) for g in visible)
-    for i, g in enumerate(visible, 1):
-        click.echo(f"  {i:>2}. {g.name:<{name_width}}  {g.id}")
-    click.echo("")
-
-    while True:
-        raw = click.prompt("Select category group", default="1").strip()
-        try:
-            idx = int(raw)
-        except ValueError:
-            click.echo(f"  Invalid selection: {raw}", err=True)
-            continue
-        if not 1 <= idx <= len(visible):
-            click.echo(f"  Out of range: {idx}", err=True)
-            continue
-        return visible[idx - 1]
+    return ui.select_category_group(visible)
 
 
 def fmt_amount(amount: float) -> str:
@@ -230,15 +199,6 @@ def cmd_accounts(plan_id: Optional[str], include_closed: bool) -> None:
         )
 
 
-def _status_label(r: AccountReconciliationResult) -> str:
-    if r.matched:
-        return "matched"
-    sign = "+" if r.adjustment_in_units > 0 else ""
-    if r.adjustment_created:
-        return f"adjusted {sign}{fmt_amount(r.adjustment_in_units)}"
-    return f"discrepancy {sign}{fmt_amount(r.adjustment_in_units)} (not adjusted)"
-
-
 def _reconcile_one(
     client: YnabClient,
     plan_id: str,
@@ -253,78 +213,52 @@ def _reconcile_one(
     Returns ('done', result) | ('skip', None) | ('quit', None).
     'quit' means: return to menu (and stop all-mode early).
     """
-    click.echo(f"\n{'─' * 60}")
-    click.echo(account.name)
-    click.echo(f"  YNAB cleared balance: {fmt_amount(account.cleared_balance_in_units())}")
-    if account.uncleared_balance != 0:
-        click.echo(
-            f"  Uncleared (pending):  {fmt_amount(account.uncleared_balance_in_units())}"
-        )
+    ui.show_account_header(account, native_iso)
 
-    raw = click.prompt(
-        "  Statement balance [Enter to accept, s=skip, q=back to menu]",
-        default="",
-        show_default=False,
-    ).strip()
-
-    if raw.lower() == "q":
+    answer = ui.ask_statement_balance(account)
+    if answer == "quit":
         return ("quit", None)
-    if raw.lower() == "s":
-        click.echo("  Skipped.")
+    if answer == "skip":
+        ui.show_skipped()
         return ("skip", None)
 
+    amount, input_iso = answer  # type: ignore[misc]
     memo = None
-    if raw == "":
-        statement_balance = account.cleared_balance_in_units()
-    else:
+    if input_iso and native_iso and input_iso != native_iso:
         try:
-            amount, input_iso = parse_statement_input(raw)
-        except ValueError:
-            click.echo(f"  Invalid amount '{raw}', skipping.", err=True)
-            return ("skip", None)
-
-        if input_iso and native_iso and input_iso != native_iso:
-            try:
+            with ui.spinner(f"Converting {input_iso} → {native_iso}…"):
                 converted = convert_currency(amount, input_iso, native_iso)
-            except (ValueError, requests.RequestException) as e:
-                click.echo(f"  Currency conversion error: {e}", err=True)
-                return ("skip", None)
-            rate = converted / amount
-            click.echo(
-                f"  Converting {amount:,.2f} {input_iso} → {fmt_amount(converted)} {native_iso}"
-                f" (rate: {rate:.4f})"
-            )
-            statement_balance = converted
-            memo = f"Reconciliation adjustment ({amount:.0f} {input_iso} @ {rate:.0f})"
-        else:
-            statement_balance = amount
+        except (ValueError, requests.RequestException) as e:
+            ui.show_error(f"Currency conversion error: {e}")
+            return ("skip", None)
+        rate = converted / amount
+        ui.show_conversion(amount, input_iso, converted, native_iso, rate)
+        statement_balance = converted
+        memo = f"Reconciliation adjustment ({amount:.0f} {input_iso} @ {rate:.0f})"
+    else:
+        statement_balance = amount
 
     current = account.cleared_balance_in_units()
     adjustment = statement_balance - current
     if not no_adjust and abs(current) > 0 and abs(adjustment) / abs(current) > 0.30:
-        pct = abs(adjustment) / abs(current) * 100
-        sign = "+" if adjustment > 0 else ""
-        click.echo(
-            f"  ⚠ Large adjustment: {sign}{fmt_amount(adjustment)} "
-            f"({pct:.0f}% of current balance {fmt_amount(current)})"
-        )
-        if not click.confirm("  Proceed with this adjustment?", default=False):
-            click.echo("  Skipped.")
+        if not ui.confirm_large_adjustment(adjustment, current):
+            ui.show_skipped()
             return ("skip", None)
 
     try:
-        result = reconcile_account(
-            client,
-            plan_id,
-            account,
-            statement_balance,
-            create_adjustment=not no_adjust,
-            payee_id=payee_id,
-            categories=categories,
-            memo=memo,
-        )
+        with ui.spinner("Posting adjustment…" if abs(adjustment) >= 0.001 else "Reconciling…"):
+            result = reconcile_account(
+                client,
+                plan_id,
+                account,
+                statement_balance,
+                create_adjustment=not no_adjust,
+                payee_id=payee_id,
+                categories=categories,
+                memo=memo,
+            )
     except YnabError as e:
-        click.echo(f"  Error: {e}", err=True)
+        ui.show_error(str(e))
         return ("skip", None)
 
     if result.adjustment_created:
@@ -332,19 +266,7 @@ def _reconcile_one(
         account.cleared_balance += delta
         account.balance += delta
 
-    if result.matched:
-        click.echo("  Balances match — nothing to do.")
-    elif result.adjustment_created:
-        sign = "+" if result.adjustment_in_units > 0 else ""
-        click.echo(
-            f"  Adjustment created: {sign}{fmt_amount(result.adjustment_in_units)}"
-        )
-    else:
-        sign = "+" if result.adjustment_in_units > 0 else ""
-        click.echo(
-            f"  Discrepancy: {sign}{fmt_amount(result.adjustment_in_units)} (--no-adjust, skipped)"
-        )
-
+    ui.show_account_result(result, no_adjust)
     return ("done", result)
 
 
@@ -369,17 +291,18 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
     try:
         client = get_client()
         plan_id = resolve_plan_id(client, plan_id)
-        accounts = client.get_accounts(plan_id)
-        plan = client.get_plan(plan_id)
+        with ui.spinner("Loading plan…"):
+            accounts = client.get_accounts(plan_id)
+            plan = client.get_plan(plan_id)
         native_iso = plan.iso_code
     except (YnabError, click.UsageError) as e:
-        click.echo(f"Error: {e}", err=True)
+        ui.show_error(str(e))
         sys.exit(1)
 
     try:
         group = resolve_category_group(client, plan_id, category_group_id)
     except (YnabError, click.UsageError) as e:
-        click.echo(f"Error: {e}", err=True)
+        ui.show_error(str(e))
         sys.exit(1)
     categories = [c for c in group.categories if not c.deleted and not c.hidden]
 
@@ -388,32 +311,18 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
         click.echo("No open accounts found in this plan.")
         return
 
-    statuses: dict[str, AccountReconciliationResult] = {}
-    name_width = max(len(a.name) for a in candidates)
+    ui.banner(plan.name, native_iso)
 
-    def _print_menu() -> None:
-        click.echo(f"\n{'─' * 60}")
-        click.echo("Accounts:")
-        for i, acct in enumerate(candidates, 1):
-            res = statuses.get(acct.id)
-            cleared = fmt_amount(acct.cleared_balance_in_units())
-            mark = "[x]" if res is not None else "[ ]"
-            line = f"  {i:>2}. {mark} {acct.name:<{name_width}}  cleared: {cleared:>12}"
-            if res is not None:
-                line += f"  → {_status_label(res)}"
-            click.echo(line)
-        click.echo("")
-        click.echo("  a) Reconcile all remaining  [default — press Enter]")
-        click.echo("  q) Quit")
+    statuses: dict[str, AccountReconciliationResult] = {}
+    by_id = {a.id: a for a in candidates}
 
     while True:
-        _print_menu()
-        raw = click.prompt("Select", default="a", show_default=False).strip().lower()
+        choice = ui.select_account(candidates, statuses)
 
-        if raw in ("q", "quit"):
+        if choice == "quit":
             break
 
-        if raw in ("", "a", "all"):
+        if choice == "all":
             for acct in candidates:
                 if acct.id in statuses:
                     continue
@@ -426,28 +335,13 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
                     break
             continue
 
-        try:
-            idx = int(raw)
-        except ValueError:
-            click.echo(f"  Invalid selection: {raw}", err=True)
+        acct = by_id.get(choice)
+        if acct is None:
             continue
-        if not 1 <= idx <= len(candidates):
-            click.echo(f"  Out of range: {idx}", err=True)
-            continue
-
-        acct = candidates[idx - 1]
         status, result = _reconcile_one(
             client, plan_id, acct, native_iso, categories, payee_id, no_adjust
         )
         if status == "done" and result is not None:
             statuses[acct.id] = result
 
-    results = list(statuses.values())
-    if results:
-        adjusted = [r for r in results if r.adjustment_created]
-        matched = [r for r in results if r.matched]
-        click.echo(f"\n{'─' * 60}")
-        click.echo(
-            f"Done. {len(matched)} matched, {len(adjusted)} adjusted, "
-            f"{len(results) - len(matched) - len(adjusted)} discrepancies skipped."
-        )
+    ui.show_run_summary(list(statuses.values()))
