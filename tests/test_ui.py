@@ -274,6 +274,66 @@ class TestSelectPlanFallback:
         assert ui.select_plan(plans).id == "p1"
 
 
+class TestSearchableTitle:
+    """The shim that makes questionary's `use_search_filter` work with our
+    styled choice titles. questionary calls `c.title.lower()`; without the
+    shim that raises AttributeError on plain lists."""
+
+    def test_is_a_list_so_questionary_renders_it(self):
+        t = ui._SearchableTitle([("class:answer", "Checking")])
+        assert isinstance(t, list)
+        # questionary's renderer does `tokens.extend(choice.title)` — iteration must work.
+        assert list(t) == [("class:answer", "Checking")]
+
+    def test_lower_joins_token_text(self):
+        t = ui._SearchableTitle(
+            [("class:answer", "Checking"), ("class:dim", "  cleared 1,000")]
+        )
+        assert t.lower() == "checking  cleared 1,000"
+
+    def test_lower_is_case_insensitive_after_join(self):
+        t = ui._SearchableTitle([("class:answer", "MyAccount")])
+        assert "myaccount" in t.lower()
+        assert "MYACCOUNT".lower() in t.lower()
+
+    def test_account_choice_title_returns_searchable_title(self):
+        acct = _account(name="Checking", cleared_balance=1_200_000)
+        title = ui._account_choice_title(acct, result=None, name_width=10)
+        assert isinstance(title, ui._SearchableTitle)
+
+    def test_account_name_is_substring_of_lowered_title(self):
+        """questionary's filter does `query.lower() in c.title.lower()`,
+        so the account name must appear contiguously in the joined text."""
+        acct = _account(name="Checking", cleared_balance=1_200_000)
+        title = ui._account_choice_title(acct, result=None, name_width=10)
+        assert "checking" in title.lower()
+        # case-insensitive infix
+        assert "chec" in title.lower()
+        assert "ECK" in title.lower().upper()
+
+    def test_lowered_title_matches_for_reconciled_account(self):
+        acct = _account(name="Savings", cleared_balance=500_000)
+        result = _result(acct, adjustment=100.0, created=True)
+        title = ui._account_choice_title(acct, result=result, name_width=10)
+        assert "savings" in title.lower()
+        # status badge text shouldn't break name matching
+        assert "adjusted" in title.lower()
+
+    def test_questionary_choice_accepts_searchable_title(self):
+        """End-to-end: build a Choice with our shim and verify the filter
+        codepath (`query.lower() in c.title.lower()`) works without raising."""
+        import questionary
+
+        title = ui._SearchableTitle(
+            [("class:answer", "Checking"), ("class:dim", "  cleared")]
+        )
+        c = questionary.Choice(title=title, value="acct-id")
+        # This is the exact line questionary's filtered_choices uses:
+        assert "chec" in c.title.lower()
+        assert "cleared" in c.title.lower()
+        assert "missing" not in c.title.lower()
+
+
 class TestSelectCategoryGroupFallback:
     def test_picks_by_index(self, monkeypatch):
         from ynab_reconciler.api.models import CategoryGroup

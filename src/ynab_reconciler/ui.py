@@ -191,9 +191,22 @@ def select_category_group(groups: list[CategoryGroup]) -> CategoryGroup:
     return answer
 
 
+class _SearchableTitle(list):
+    """A FormattedText list with a `.lower()` returning the joined plain text.
+
+    questionary's search filter does `c.title.lower()` (common.py:388), which
+    blows up on plain lists. Subclassing list keeps `isinstance(title, list)`
+    checks in questionary's renderer happy while adding the one method the
+    filter needs.
+    """
+
+    def lower(self) -> str:
+        return "".join(token[1] for token in self).lower()
+
+
 def _account_choice_title(
     acct: Account, result: Optional[AccountReconciliationResult], name_width: int
-) -> list[tuple[str, str]]:
+) -> _SearchableTitle:
     if result is None:
         glyph = ("class:instruction", "○ ")
         tail: list[tuple[str, str]] = []
@@ -221,13 +234,15 @@ def _account_choice_title(
 
     cleared = acct.cleared_balance_in_units()
     cleared_style = "fg:#5fd75f" if cleared >= 0 else "fg:#ff5f5f"
-    return [
-        glyph,
-        ("class:answer", f"{acct.name:<{name_width}}"),
-        ("class:instruction", "   cleared "),
-        (cleared_style, f"{fmt_amount(cleared):>12}"),
-        *tail,
-    ]
+    return _SearchableTitle(
+        [
+            glyph,
+            ("class:answer", f"{acct.name:<{name_width}}"),
+            ("class:instruction", "   cleared "),
+            (cleared_style, f"{fmt_amount(cleared):>12}"),
+            *tail,
+        ]
+    )
 
 
 def select_account(
@@ -249,16 +264,18 @@ def select_account(
     choices.append(questionary.Separator("  ─────"))
     choices.append(
         questionary.Choice(
-            title=[
-                ("class:pointer", "» "),
-                ("class:answer", "Reconcile all remaining"),
-            ],
+            title=_SearchableTitle(
+                [
+                    ("class:pointer", "» "),
+                    ("class:answer", "Reconcile all remaining"),
+                ]
+            ),
             value="all",
         )
     )
     choices.append(
         questionary.Choice(
-            title=[("class:instruction", "  Quit")],
+            title=_SearchableTitle([("class:instruction", "  Quit")]),
             value="quit",
         )
     )
@@ -268,8 +285,10 @@ def select_account(
         choices=choices,
         style=QUESTIONARY_STYLE,
         qmark="❯",
-        instruction="(↑/↓ to move, Enter to pick)",
+        instruction="(↑/↓ move · Enter pick · type to search)",
         default="all",
+        use_search_filter=True,
+        use_jk_keys=False,
     ).ask()
     if answer is None:
         return "quit"
