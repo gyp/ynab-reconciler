@@ -16,9 +16,10 @@ def parse_statement_input(raw: str) -> tuple[float, str | None]:
     """
     s = raw.strip()
     iso: str | None = None
-    m = re.fullmatch(r"(.+?)\s+([A-Z]{3})", s)
+    m = re.fullmatch(r"(.+?)\s*([A-Z]{3}|Ft|ft|FT)", s)
     if m:
-        s, iso = m.group(1).strip(), m.group(2)
+        s, suffix = m.group(1).strip(), m.group(2)
+        iso = "HUF" if suffix.lower() == "ft" else suffix
 
     return _parse_number(s), iso
 

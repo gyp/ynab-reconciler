@@ -79,6 +79,15 @@ class TestParseStatementInput:
     def test_negative_with_formatting(self):
         assert parse_statement_input("-1,000.50") == (-1000.5, None)
 
+    @pytest.mark.parametrize(
+        "raw",
+        ["1000 Ft", "1000Ft", "1 000 000 Ft", "1.234,56 Ft", "1000 ft", "1000 FT"],
+    )
+    def test_ft_normalized_to_huf(self, raw):
+        amount, iso = parse_statement_input(raw)
+        assert iso == "HUF"
+        assert amount > 0
+
     def test_nbsp_thousands_separator(self):
         assert parse_statement_input("1 000") == (1000.0, None)
 
