@@ -11,10 +11,11 @@ it has an awkward gap around long-term savings and investments:
 - **Tracking accounts** sit *outside* the budget. Their value changes don't
   flow into your category balances at all, so the money you've earmarked for
   e.g. retirement never reflects what's actually in the account.
-- **On-budget accounts** do flow into the budget, but every gain or loss lands
-  in **Inflow: Ready to Assign**. For long-term investments that's noise —
-  you'd have to manually re-allocate every fluctuation, and a bad market month
-  shows up as "income" you suddenly need to deal with.
+- **On-budget accounts** *do* flow into the budget, so you can track gains and
+  losses via reconciliation — but by default the adjustment lands in
+  **Inflow: Ready to Assign**, where it's noise. A market swing isn't income
+  you want to spend, and a bad month isn't a loss you need to recoup from this
+  month's categories.
 
 Neither fits the case where you want the *value* of your long-term savings to
 reflect reality, *and* you want the categories you've earmarked for those
@@ -23,10 +24,10 @@ pot, *without* polluting daily inflow.
 
 The workflow this tool supports:
 
-1. Keep your long-term savings/investment account on-budget.
-2. Group the saving goals it funds into a single **category group**
+1. Keep your long-term savings/investment accounts on-budget.
+2. Group the saving goals they fund into a single **category group**
    (e.g. "Long-term savings").
-3. Reconcile the account periodically against its real-world value.
+3. Reconcile these accounts periodically against their real-world value.
 4. Route the reconciliation adjustment **into the saving goals themselves**,
    distributed across them in proportion to each goal's current balance.
 
@@ -35,22 +36,55 @@ shrinks with its share of the pot, and *Ready to Assign* stays clean.
 
 ## What the tool does
 
-- Lists your YNAB plans, accounts, payees, and category groups so you can
-  find the IDs you need.
-- Walks you through reconciling each open account interactively.
+- Picks the plan, account, payee, and category group interactively (with
+  type-to-search), so you don't need to look up YNAB IDs by hand.
+- Walks you through reconciling the relevant accounts interactively.
 - Computes the adjustment as `statement_balance − YNAB cleared balance`.
-- Posts a single cleared, approved adjustment transaction back to YNAB.
-- Optionally turns that transaction into a **split transaction** across the
-  categories of a chosen category group, weighted by each category's current
-  balance — this is the piece that drives the savings-goal workflow above.
+- Posts the adjustment back to YNAB as a single cleared, approved **split
+  transaction** across the categories of a chosen category group, weighted by
+  each category's current balance — this is the piece that drives the
+  savings-goal workflow above.
 - Accepts statement balances in another currency (e.g. `1000 EUR` against a
   USD budget) and converts via the free
   [Frankfurter](https://frankfurter.dev/) exchange-rate API.
 
 Under the hood it talks to the official
 [YNAB REST API v1](https://api.ynab.com/) (`https://api.ynab.com/v1`) using a
-small `requests`-based client. All amounts are exchanged in YNAB's "milliunits"
-(thousandths of a currency unit); the client handles that conversion for you.
+small `requests`-based client.
+
+### Example
+
+Suppose you have a "Long-term savings" category group with three goals, and
+their current category balances are:
+
+| Goal                  | Balance |
+| --------------------- | ------- |
+| Retirement savings    | €2,000  |
+| New car               | €1,000  |
+| College fund          | €1,000  |
+
+Your investment account shows a YNAB cleared balance of **€4,000**, but the
+broker says it's actually worth **€4,400**. You reconcile with
+the saving category group set to "Long-term savings". The tool posts a single split
+adjustment of **+€400** distributed in proportion to the goal balances
+(weights 2:1:1):
+
+| Goal                  | Adjustment |
+| --------------------- | ---------- |
+| Retirement savings    | +€200      |
+| New car               | +€100      |
+| College fund          | +€100      |
+
+Result: the account is back in sync with reality (€4,400), each goal grew in
+proportion to its share of the pot.
+
+#### How the split works
+
+- Weights = the absolute values of each category's current balance.
+- If at least one category is non-zero, each subtransaction is
+  `round(total × weight / sum_of_weights)`; the last subtransaction absorbs
+  any rounding remainder so the split sums exactly to the adjustment.
+- If every category in the group is at zero, the split is divided evenly.
 
 ## Install
 
@@ -122,20 +156,6 @@ ynab-reconciler accounts         --plan <plan-id>
 
 ## Usage
 
-The CLI is `ynab-reconciler`. All commands take `--plan` (or fall back to
-the saved `plan_id` default).
-
-| Command                                  | What it does                                                  |
-| ---------------------------------------- | ------------------------------------------------------------- |
-| `init`                                   | Interactive first-run setup (token + defaults).               |
-| `plans`                                  | List your budgets.                                            |
-| `payees --plan <id>`                     | List payees in a plan.                                        |
-| `category-groups --plan <id>`            | List category groups and their categories.                    |
-| `accounts --plan <id> [--include-closed]`| List accounts with cleared balance and last-reconciled date.  |
-| `reconcile --plan <id> [...]`            | Interactive reconciliation (see below).                       |
-
-### Reconciling
-
 Once defaults are saved (via `init` or `config set`), just run:
 
 ```bash
@@ -165,39 +185,10 @@ Useful flags:
 - `--no-adjust` — show discrepancies but don't post any transactions
   (dry-run-style report).
 
-## Worked example
+The tool has a few additional utility functions, check `ynab-reconciler --help`
+for the full list.
 
-Suppose you have a "Long-term savings" category group with three goals, and
-their current category balances are:
 
-| Goal                  | Balance |
-| --------------------- | ------- |
-| Retirement savings    | €2,000  |
-| New car               | €1,000  |
-| College fund          | €1,000  |
-
-Your investment account shows a YNAB cleared balance of **€4,000**, but the
-broker says it's actually worth **€4,400**. You reconcile with
-`--category-group` set to "Long-term savings". The tool posts a single split
-adjustment of **+€400** distributed in proportion to the goal balances
-(weights 2:1:1):
-
-| Goal                  | Adjustment |
-| --------------------- | ---------- |
-| Retirement savings    | +€200      |
-| New car               | +€100      |
-| College fund          | +€100      |
-
-Result: the account is back in sync with reality (€4,400), each goal grew in
-proportion to its share of the pot, and *Ready to Assign* is untouched.
-
-### How the split works
-
-- Weights = the absolute values of each category's current balance.
-- If at least one category is non-zero, each subtransaction is
-  `round(total × weight / sum_of_weights)`; the last subtransaction absorbs
-  any rounding remainder so the split sums exactly to the adjustment.
-- If every category in the group is at zero, the split is divided evenly.
 
 ## Development
 
