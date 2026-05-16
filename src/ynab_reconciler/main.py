@@ -129,9 +129,51 @@ def fmt_amount(amount: float) -> str:
     return f"{amount:,.0f}"
 
 
-@click.group()
+class GroupedGroup(click.Group):
+    """A click.Group that renders --help with commands split into labelled sections."""
+
+    SECTIONS: list[tuple[str, list[str]]] = [
+        ("Main commands", ["init", "reconcile"]),
+        ("Settings", ["auth", "config"]),
+        ("Utilities", ["plans", "accounts", "payees", "category-groups"]),
+    ]
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        listed: set[str] = {name for _, names in self.SECTIONS for name in names}
+
+        def rows_for(names: list[str]) -> list[tuple[str, str]]:
+            rows: list[tuple[str, str]] = []
+            for name in names:
+                cmd = self.get_command(ctx, name)
+                if cmd is None or cmd.hidden:
+                    continue
+                rows.append((name, cmd.get_short_help_str(limit=60)))
+            return rows
+
+        for section, names in self.SECTIONS:
+            rows = rows_for(names)
+            if rows:
+                with formatter.section(section):
+                    formatter.write_dl(rows)
+
+        leftover = [n for n in self.list_commands(ctx) if n not in listed]
+        if leftover:
+            rows = rows_for(leftover)
+            if rows:
+                with formatter.section("Other"):
+                    formatter.write_dl(rows)
+
+
+@click.group(cls=GroupedGroup)
 def cli() -> None:
-    """Reconcile YNAB accounts from the command line."""
+    """Reconcile YNAB accounts from the command line.
+
+    Computes the adjustment as (statement balance − YNAB cleared balance) and
+    posts it back as a split transaction across the categories of a chosen
+    category group, weighted by each category's current balance — useful for
+    spreading the gains and losses of a long-term investment account across
+    the saving goals it funds.
+    """
 
 
 @cli.command("plans")
@@ -517,7 +559,7 @@ def cmd_config_path() -> None:
 
 @cli.command("init")
 def cmd_init() -> None:
-    """Interactive first-run setup: store a token and pick starting defaults."""
+    """First-run wizard: store a token and pick defaults."""
     if not ui.is_interactive():
         raise click.UsageError(
             "`init` is an interactive wizard. Use `auth login` and `config set` "
