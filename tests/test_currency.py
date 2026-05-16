@@ -35,6 +35,53 @@ class TestParseStatementInput:
         with pytest.raises(ValueError):
             parse_statement_input("1000 EU")
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "1 000 000,00",
+            "1 000 000",
+            "1,000,000.00",
+            "1,000,000",
+            "1.000.000,00",
+            "1.000.000",
+        ],
+    )
+    def test_one_million_formats(self, raw):
+        assert parse_statement_input(raw) == (1_000_000.0, None)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "1 000 000,00 EUR",
+            "1 000 000 EUR",
+            "1,000,000.00 EUR",
+            "1,000,000 EUR",
+        ],
+    )
+    def test_one_million_formats_with_currency(self, raw):
+        assert parse_statement_input(raw) == (1_000_000.0, "EUR")
+
+    def test_european_decimal_comma(self):
+        assert parse_statement_input("1234,56") == (1234.56, None)
+
+    def test_european_mixed(self):
+        assert parse_statement_input("1.234,56") == (1234.56, None)
+
+    def test_single_comma_three_digits_is_thousands(self):
+        assert parse_statement_input("1,000") == (1000.0, None)
+
+    def test_single_dot_three_digits_is_thousands(self):
+        assert parse_statement_input("1.000") == (1000.0, None)
+
+    def test_single_comma_non_three_digits_is_decimal(self):
+        assert parse_statement_input("1,5") == (1.5, None)
+
+    def test_negative_with_formatting(self):
+        assert parse_statement_input("-1,000.50") == (-1000.5, None)
+
+    def test_nbsp_thousands_separator(self):
+        assert parse_statement_input("1 000") == (1000.0, None)
+
 
 class TestConvertCurrency:
     def test_conversion_multiplies_by_rate(self):

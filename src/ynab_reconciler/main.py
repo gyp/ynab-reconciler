@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import readline  # noqa: F401 — enables arrow-key editing in click.prompt
 import sys
 from typing import Optional
 

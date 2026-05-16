@@ -11,14 +11,44 @@ FRANKFURTER_BASE = "https://api.frankfurter.dev/v2"
 def parse_statement_input(raw: str) -> tuple[float, str | None]:
     """Parse user input into (amount, iso_code_or_None).
 
-    "1000 EUR" → (1000.0, "EUR")
-    "1200.50"  → (1200.50, None)
-    Raises ValueError on unparseable input.
+    Accepts many copy-pasted formats: "1,000,000.00", "1 000 000,00",
+    "1.234,56 EUR", "-500 USD", etc. Raises ValueError on unparseable input.
     """
-    m = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s+([A-Z]{3})", raw.strip())
+    s = raw.strip()
+    iso: str | None = None
+    m = re.fullmatch(r"(.+?)\s+([A-Z]{3})", s)
     if m:
-        return float(m.group(1)), m.group(2)
-    return float(raw), None
+        s, iso = m.group(1).strip(), m.group(2)
+
+    return _parse_number(s), iso
+
+
+def _parse_number(s: str) -> float:
+    sign = ""
+    if s[:1] in "+-":
+        sign, s = s[0], s[1:]
+
+    s = s.replace(" ", "").replace(" ", "")
+    if not s or not re.fullmatch(r"[\d.,]+", s):
+        raise ValueError(f"Cannot parse number: {s!r}")
+
+    has_comma = "," in s
+    has_dot = "." in s
+    if has_comma and has_dot:
+        decimal = "," if s.rfind(",") > s.rfind(".") else "."
+        thousands = "." if decimal == "," else ","
+        s = s.replace(thousands, "").replace(decimal, ".")
+    elif has_comma or has_dot:
+        sep = "," if has_comma else "."
+        count = s.count(sep)
+        tail = s.rsplit(sep, 1)[1]
+        is_thousands = count > 1 or len(tail) == 3
+        if is_thousands:
+            s = s.replace(sep, "")
+        elif sep == ",":
+            s = s.replace(",", ".")
+
+    return float(sign + s)
 
 
 def convert_currency(amount: float, from_iso: str, to_iso: str) -> float:
