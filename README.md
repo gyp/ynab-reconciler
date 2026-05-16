@@ -77,6 +77,12 @@ cp .env.example .env
 | `YNAB_PAYEE_ID`          | no       | Default payee for adjustment transactions.                         |
 | `YNAB_CATEGORY_GROUP_ID` | no       | Default category group to split adjustments across.                |
 
+If `YNAB_PLAN_ID` (or `--plan`) is not set, the tool lists your plans and
+prompts you to pick one interactively. The same happens for the category
+group — if `YNAB_CATEGORY_GROUP_ID` (or `--category-group`) is missing, or
+points to a group that doesn't exist in the selected plan, you'll be asked to
+choose one. When there's only one candidate, it's selected automatically.
+
 To generate a personal access token, go to your YNAB account settings and
 follow the instructions at <https://api.ynab.com/> — that page also documents
 the underlying API this tool uses.

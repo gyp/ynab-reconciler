@@ -11,7 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from .api.client import YnabClient, YnabError
-from .api.models import Account
+from .api.models import Account, CategoryGroup
 from .currency import convert_currency, parse_statement_input
 from .reconciler import AccountReconciliationResult, milliunits, reconcile_account
 
@@ -26,6 +26,100 @@ def get_client() -> YnabClient:
             "Set it in your shell or in a .env file."
         )
     return YnabClient(token)
+
+
+def resolve_plan_id(client: YnabClient, plan_id: Optional[str]) -> str:
+    """Return plan_id if given; otherwise list plans and prompt interactively."""
+    if plan_id:
+        return plan_id
+
+    if not sys.stdin.isatty():
+        raise click.UsageError(
+            "No plan specified and not running interactively — "
+            "set YNAB_PLAN_ID or pass --plan."
+        )
+
+    plans = client.get_plans()
+    if not plans:
+        raise click.UsageError("No plans found on this YNAB account.")
+
+    if len(plans) == 1:
+        only = plans[0]
+        click.echo(f"Using the only available plan: {only.name}")
+        return only.id
+
+    click.echo(f"\n{'─' * 60}")
+    click.echo("Plans:")
+    name_width = max(len(p.name) for p in plans)
+    for i, plan in enumerate(plans, 1):
+        click.echo(f"  {i:>2}. {plan.name:<{name_width}}  {plan.id}")
+    click.echo("")
+
+    while True:
+        raw = click.prompt("Select plan", default="1").strip()
+        try:
+            idx = int(raw)
+        except ValueError:
+            click.echo(f"  Invalid selection: {raw}", err=True)
+            continue
+        if not 1 <= idx <= len(plans):
+            click.echo(f"  Out of range: {idx}", err=True)
+            continue
+        return plans[idx - 1].id
+
+
+def resolve_category_group(
+    client: YnabClient,
+    plan_id: str,
+    category_group_id: Optional[str],
+) -> CategoryGroup:
+    """Return a CategoryGroup; pick interactively if id is missing or not found in plan."""
+    groups = client.get_category_groups(plan_id)
+    visible = [
+        g for g in groups
+        if not g.deleted and not g.hidden
+        and any(not c.deleted and not c.hidden for c in g.categories)
+    ]
+    if not visible:
+        raise click.UsageError("No category groups with visible categories in this plan.")
+
+    if category_group_id:
+        match = next((g for g in visible if g.id == category_group_id), None)
+        if match is not None:
+            return match
+        click.echo(
+            f"Category group '{category_group_id}' not found in this plan.", err=True
+        )
+
+    if not sys.stdin.isatty():
+        raise click.UsageError(
+            "No (valid) category group specified and not running interactively — "
+            "set YNAB_CATEGORY_GROUP_ID or pass --category-group."
+        )
+
+    if len(visible) == 1:
+        only = visible[0]
+        click.echo(f"Using the only available category group: {only.name}")
+        return only
+
+    click.echo(f"\n{'─' * 60}")
+    click.echo("Category groups:")
+    name_width = max(len(g.name) for g in visible)
+    for i, g in enumerate(visible, 1):
+        click.echo(f"  {i:>2}. {g.name:<{name_width}}  {g.id}")
+    click.echo("")
+
+    while True:
+        raw = click.prompt("Select category group", default="1").strip()
+        try:
+            idx = int(raw)
+        except ValueError:
+            click.echo(f"  Invalid selection: {raw}", err=True)
+            continue
+        if not 1 <= idx <= len(visible):
+            click.echo(f"  Out of range: {idx}", err=True)
+            continue
+        return visible[idx - 1]
 
 
 def fmt_amount(amount: float) -> str:
@@ -58,11 +152,12 @@ def cmd_plans() -> None:
 
 
 @cli.command("payees")
-@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", required=True, help="Plan ID (overrides YNAB_PLAN_ID).")
-def cmd_payees(plan_id: str) -> None:
+@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", default=None, help="Plan ID (overrides YNAB_PLAN_ID).")
+def cmd_payees(plan_id: Optional[str]) -> None:
     """List payees in a plan."""
     try:
         client = get_client()
+        plan_id = resolve_plan_id(client, plan_id)
         payees = client.get_payees(plan_id)
     except (YnabError, click.UsageError) as e:
         click.echo(f"Error: {e}", err=True)
@@ -80,11 +175,12 @@ def cmd_payees(plan_id: str) -> None:
 
 
 @cli.command("category-groups")
-@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", required=True, help="Plan ID (overrides YNAB_PLAN_ID).")
-def cmd_category_groups(plan_id: str) -> None:
+@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", default=None, help="Plan ID (overrides YNAB_PLAN_ID).")
+def cmd_category_groups(plan_id: Optional[str]) -> None:
     """List category groups (and their categories) in a plan."""
     try:
         client = get_client()
+        plan_id = resolve_plan_id(client, plan_id)
         groups = client.get_category_groups(plan_id)
     except (YnabError, click.UsageError) as e:
         click.echo(f"Error: {e}", err=True)
@@ -105,12 +201,13 @@ def cmd_category_groups(plan_id: str) -> None:
 
 
 @cli.command("accounts")
-@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", required=True, help="Plan ID (overrides YNAB_PLAN_ID).")
+@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", default=None, help="Plan ID (overrides YNAB_PLAN_ID).")
 @click.option("--include-closed", is_flag=True, help="Include closed accounts.")
-def cmd_accounts(plan_id: str, include_closed: bool) -> None:
+def cmd_accounts(plan_id: Optional[str], include_closed: bool) -> None:
     """List accounts in a plan."""
     try:
         client = get_client()
+        plan_id = resolve_plan_id(client, plan_id)
         accounts = client.get_accounts(plan_id)
     except (YnabError, click.UsageError) as e:
         click.echo(f"Error: {e}", err=True)
@@ -239,7 +336,7 @@ def _reconcile_one(
 
 
 @cli.command("reconcile")
-@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", required=True, help="Plan ID (overrides YNAB_PLAN_ID).")
+@click.option("--plan", "plan_id", envvar="YNAB_PLAN_ID", default=None, help="Plan ID (overrides YNAB_PLAN_ID).")
 @click.option("--payee", "payee_id", envvar="YNAB_PAYEE_ID", default=None, help="Payee ID for adjustment transactions (overrides YNAB_PAYEE_ID).")
 @click.option("--category-group", "category_group_id", envvar="YNAB_CATEGORY_GROUP_ID", default=None, help="Category group ID whose categories are used for split adjustments (overrides YNAB_CATEGORY_GROUP_ID).")
 @click.option(
@@ -247,7 +344,7 @@ def _reconcile_one(
     is_flag=True,
     help="Show discrepancies but do not create adjustment transactions.",
 )
-def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Optional[str], no_adjust: bool) -> None:
+def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_group_id: Optional[str], no_adjust: bool) -> None:
     """Reconcile accounts in a plan.
 
     Lists the plan's open accounts and lets you pick which to reconcile:
@@ -258,6 +355,7 @@ def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Opti
     """
     try:
         client = get_client()
+        plan_id = resolve_plan_id(client, plan_id)
         accounts = client.get_accounts(plan_id)
         plan = client.get_plan(plan_id)
         native_iso = plan.iso_code
@@ -265,21 +363,12 @@ def cmd_reconcile(plan_id: str, payee_id: Optional[str], category_group_id: Opti
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    categories = None
-    if category_group_id:
-        try:
-            groups = client.get_category_groups(plan_id)
-        except YnabError as e:
-            click.echo(f"Error fetching categories: {e}", err=True)
-            sys.exit(1)
-        match = next((g for g in groups if g.id == category_group_id), None)
-        if match is None:
-            click.echo(f"Error: category group '{category_group_id}' not found.", err=True)
-            sys.exit(1)
-        categories = [c for c in match.categories if not c.deleted and not c.hidden]
-        if not categories:
-            click.echo(f"Error: category group '{match.name}' has no visible categories.", err=True)
-            sys.exit(1)
+    try:
+        group = resolve_category_group(client, plan_id, category_group_id)
+    except (YnabError, click.UsageError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    categories = [c for c in group.categories if not c.deleted and not c.hidden]
 
     candidates = [a for a in accounts if not a.deleted and not a.closed]
     if not candidates:
