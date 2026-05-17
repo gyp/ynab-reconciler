@@ -88,13 +88,36 @@ proportion to its share of the pot.
 
 ## Install
 
-Requires Python 3.11+.
+### macOS (Homebrew)
 
 ```bash
-git clone <this-repo> ynab-reconciler
-cd ynab-reconciler
-pip install -e .
+brew install gyp/tap/ynab-reconciler
 ```
+
+### Windows, Linux, or anywhere with Python
+
+```bash
+pipx install ynab-reconciler
+```
+
+[`pipx`](https://pipx.pypa.io/) installs the tool into its own isolated
+environment and puts the `ynab-reconciler` command on your `PATH` — no need to
+think about virtualenvs.
+
+If you don't have `pipx` yet:
+
+- **macOS without Homebrew:** `python3 -m pip install --user pipx && python3 -m pipx ensurepath`
+- **Windows:** install Python from [python.org](https://www.python.org/downloads/),
+  then in a new terminal run `python -m pip install --user pipx` followed by
+  `python -m pipx ensurepath`. Close and reopen the terminal once.
+- **Linux:** most distros package it as `pipx` or `python3-pipx`; otherwise the
+  `python3 -m pip install --user pipx` command above works too.
+
+[`uv`](https://docs.astral.sh/uv/) users can install it the same way:
+`uv tool install ynab-reconciler`.
+
+Requires Python 3.11+ under the hood; `pipx` and Homebrew will handle that for
+you.
 
 ## Configure
 
@@ -195,6 +218,8 @@ for the full list.
 ## Development
 
 ```bash
+git clone https://github.com/gyp/ynab-reconciler
+cd ynab-reconciler
 pip install -e ".[dev]"
 pytest
 ```
