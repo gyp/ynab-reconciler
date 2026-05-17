@@ -310,6 +310,16 @@ def select_account(
     )
     choices.append(
         questionary.Choice(
+            title=_SearchableTitle(
+                [
+                    ("class:instruction", "  Refresh from YNAB"),
+                ]
+            ),
+            value="refresh",
+        )
+    )
+    choices.append(
+        questionary.Choice(
             title=_SearchableTitle([("class:instruction", "  Quit")]),
             value="quit",
         )
@@ -347,12 +357,15 @@ def _fallback_select_account(
         click.echo(line)
     click.echo("")
     click.echo("  a) Reconcile all remaining  [default — press Enter]")
+    click.echo("  r) Refresh from YNAB")
     click.echo("  q) Quit")
 
     while True:
         raw = click.prompt("Select", default="a", show_default=False).strip().lower()
         if raw in ("q", "quit"):
             return "quit"
+        if raw in ("r", "refresh"):
+            return "refresh"
         if raw in ("", "a", "all"):
             return "all"
         try:

@@ -414,6 +414,20 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
         if choice == "quit":
             break
 
+        if choice == "refresh":
+            try:
+                with ui.spinner("Refreshing from YNAB…"):
+                    accounts = client.get_accounts(plan_id)
+                    plan = client.get_plan(plan_id)
+            except YnabError as e:
+                ui.show_error(str(e))
+                continue
+            native_iso = plan.iso_code
+            candidates = [a for a in accounts if not a.deleted and not a.closed]
+            by_id = {a.id: a for a in candidates}
+            ui.show_success(f"Refreshed {len(candidates)} accounts from YNAB.")
+            continue
+
         if choice == "all":
             for acct in candidates:
                 if acct.id in statuses:
