@@ -7,3 +7,5 @@ build/
 .env
 .zed/
 .vscode/
+.DS_Store
+TODO.md
