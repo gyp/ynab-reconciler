@@ -150,6 +150,21 @@ git tag vX.Y.Z
 git push && git push --tags
 ```
 
+## 9. Create a GitHub Release
+
+```bash
+cd $YNAB_RECONCILER_LOCAL_CLONE
+gh release create vX.Y.Z --generate-notes
+```
+
+`--generate-notes` auto-populates the release page with PR titles and commits
+since the previous tag. For a first release (or any time the auto-notes look
+noisy), replace it with `--notes "short description"` or open the page on
+GitHub afterwards and edit by hand.
+
+No need to attach the wheel or sdist — they live on PyPI and duplicating them
+here is just extra surface to keep in sync.
+
 ## Failure recovery
 
 - **PyPI upload failed before the formula update:** bump version, restart from
