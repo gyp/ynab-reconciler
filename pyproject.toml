@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ynab-reconciler"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reconcile YNAB accounts and split the adjustment across savings-goal categories."
 readme = "README.md"
 license = {file = "LICENSE"}

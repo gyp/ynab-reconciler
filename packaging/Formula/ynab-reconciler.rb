@@ -17,8 +17,8 @@ class YnabReconciler < Formula
 
   desc "Reconcile YNAB accounts, splitting adjustments across savings-goal categories"
   homepage "https://github.com/gyp/ynab-reconciler"
-  url "https://files.pythonhosted.org/packages/c3/b2/38a6047e63dc711444b6d68e6fd74900ea11b56e9bce32b08c831d1affa9/ynab_reconciler-0.1.0.tar.gz"
-  sha256 "4dadcdb288e8c8c881ac08edafb59af7ace21ec4df20775fc4f06634fefa5036"
+  url "https://files.pythonhosted.org/packages/8b/ce/c9dab9de6704da1249e6de240f90250172e694fdad6238e6f8259996dcde/ynab_reconciler-0.2.0.tar.gz"
+  sha256 "cdc42bd9ffec1951af2b41bc3ff6089650ae786883d140edf5b70593d61ebaf9"
   license "Unlicense"
 
   depends_on "python@3.13"
