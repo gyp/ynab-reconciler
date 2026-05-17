@@ -1,5 +1,17 @@
 # Releasing a new version
 
+## TL;DR
+
+```bash
+scripts/release.sh X.Y.Z              # full release
+scripts/release.sh X.Y.Z --dry-run    # rehearse without uploading or pushing
+```
+
+The script runs every step in this document. It's idempotent — if it fails
+partway through, fix the underlying issue and re-run; already-done steps
+short-circuit. Read the rest of this file when the script gets stuck or when
+you need to understand what it's doing.
+
 Canonical files:
 
 - Version: [pyproject.toml](../pyproject.toml) (`version = "..."`)
@@ -21,6 +33,12 @@ export HOMEBREW_TAP_LOCAL_CLONE=/path/to/your/homebrew-tap
 
 `X.Y.Z` in commands is a placeholder for the version you're releasing
 (e.g. `0.2.0`).
+
+## Manual flow
+
+The rest of this document describes the manual flow that `scripts/release.sh`
+automates. Useful when the script fails and you need to resume by hand, or
+when you want to understand what's happening under the hood.
 
 ## 1. Bump the version
 
