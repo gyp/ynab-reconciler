@@ -82,58 +82,101 @@ PY
 Update the `url` and `sha256` lines near the top of
 [Formula/ynab-reconciler.rb](Formula/ynab-reconciler.rb).
 
-### 5b. Refresh `resource` blocks for any deps that moved
+### 5b. (Maybe) refresh `resource` blocks
 
-This is only needed if you changed runtime deps in `pyproject.toml` or want to
-pin to currently-resolvable versions on PyPI. Easiest way:
+Only needed if runtime deps in `pyproject.toml` changed since the previous
+release. Quick check from the repo root, before tagging the new version:
 
 ```bash
-# Copy current formula into the local clone of the tap
-# (Homebrew tools only work on tapped formulae):
-cp packaging/Formula/ynab-reconciler.rb $HOMEBREW_TAP_LOCAL_CLONE/Formula/
+prev=$(git describe --tags --abbrev=0)
+diff \
+  <(git show $prev:pyproject.toml | awk '/^dependencies = \[/,/^]/') \
+  <(awk '/^dependencies = \[/,/^]/' pyproject.toml)
+```
 
-# From inside the tap:
-cd $HOMEBREW_TAP_LOCAL_CLONE
+Empty diff → **skip to step 6**. Non-empty → continue below.
+
+`brew update-python-resources` only operates on formulae inside a tapped
+location. One-time tap setup (skip if already done):
+
+```bash
+brew tap gyp/tap   # clones github.com/gyp/homebrew-tap into brew's tap dir
+```
+
+This creates a *separate* clone at `$(brew --repository)/Library/Taps/gyp/homebrew-tap`
+— independent of your `$HOMEBREW_TAP_LOCAL_CLONE`. Both have GitHub as origin
+but don't share files; you'll bridge them with `cp`.
+
+Copy the current formula into brew's clone and refresh from there:
+
+```bash
+cp packaging/Formula/ynab-reconciler.rb \
+   "$(brew --repository)/Library/Taps/gyp/homebrew-tap/Formula/"
+cd "$(brew --repository)/Library/Taps/gyp/homebrew-tap"
 brew update-python-resources Formula/ynab-reconciler.rb
+```
 
-# Copy the refreshed formula back as the canonical:
+**24-hour PyPI freshness gate.** Brew passes
+`--uploaded-prior-to=<now − 24h>` to pip
+(hardcoded in `Library/Homebrew/utils/pypi.rb`, line ~498), so anything you
+uploaded to PyPI today is invisible to this command. The failure looks like:
+
+> ERROR: Could not find a version that satisfies the requirement ynab-reconciler==X.Y.Z
+
+If you hit this, either wait a day and re-run, or edit the `resource` blocks
+manually against `pip index versions <pkg>` output. There's no override flag
+or env var.
+
+When it succeeds, copy the refreshed formula back as canonical:
+
+```bash
 cp Formula/ynab-reconciler.rb $YNAB_RECONCILER_LOCAL_CLONE/packaging/Formula/
 cd -
 ```
 
-If runtime deps didn't change, you can skip this and just bump the main `url` +
-`sha256`.
-
 ## 6. Test the formula locally
 
-Make sure the tap points at the local clone (one-time setup; re-tap if needed):
+One-time tap setup (skip if already done in step 5b):
 
 ```bash
-brew untap gyp/tap 2>/dev/null
-brew tap gyp/tap $HOMEBREW_TAP_LOCAL_CLONE
+brew tap gyp/tap   # clones github.com/gyp/homebrew-tap into brew's tap dir
 ```
 
-Then:
+Brew installs from its own clone of the tap at
+`$(brew --repository)/Library/Taps/gyp/homebrew-tap`, **not** your
+`$HOMEBREW_TAP_LOCAL_CLONE`. To test the change before pushing, copy the
+formula into brew's clone:
 
 ```bash
-# Commit the updated formula in the tap so the local clone has a HEAD with it:
-cd $HOMEBREW_TAP_LOCAL_CLONE
-git add Formula/ynab-reconciler.rb
-git commit -m "Bump ynab-reconciler to X.Y.Z"
+cp $YNAB_RECONCILER_LOCAL_CLONE/packaging/Formula/ynab-reconciler.rb \
+   "$(brew --repository)/Library/Taps/gyp/homebrew-tap/Formula/"
 
-# Install from source via the tap:
 brew uninstall ynab-reconciler 2>/dev/null
 brew install --build-from-source gyp/tap/ynab-reconciler
 brew test ynab-reconciler
 ynab-reconciler --help
 ```
 
-If anything fails, fix the formula, amend the commit, re-run `brew install`.
+`brew install --build-from-source` reads the formula from disk, so an
+uncommitted change in brew's clone is enough. The 24h freshness gate from
+step 5b does **not** apply here — installs use the pinned `resource` URLs
+in the formula, no PyPI resolution.
+
+If anything fails, fix the canonical formula in
+`$YNAB_RECONCILER_LOCAL_CLONE/packaging/Formula/`, re-copy to brew's clone,
+re-run `brew install`.
 
 ## 7. Push the tap
 
+Once the local install works, propagate to `$HOMEBREW_TAP_LOCAL_CLONE` and
+push:
+
 ```bash
+cp $YNAB_RECONCILER_LOCAL_CLONE/packaging/Formula/ynab-reconciler.rb \
+   $HOMEBREW_TAP_LOCAL_CLONE/Formula/
 cd $HOMEBREW_TAP_LOCAL_CLONE
+git add Formula/ynab-reconciler.rb
+git commit -m "Bump ynab-reconciler to X.Y.Z"
 git push
 ```
 
