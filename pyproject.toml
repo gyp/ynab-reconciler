@@ -5,7 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ynab-reconciler"
 version = "0.1.0"
+description = "Reconcile YNAB accounts and split the adjustment across savings-goal categories."
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "Peter Gyongyosi", email = "gypeter@gmail.com"}]
 requires-python = ">=3.11"
+keywords = ["ynab", "budget", "reconcile", "finance", "savings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: The Unlicense (Unlicense)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
 dependencies = [
     "click>=8.1",
     "requests>=2.31",
@@ -15,6 +32,11 @@ dependencies = [
     "platformdirs>=4",
     "tomli-w>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/gyp/ynab-reconciler"
+Source = "https://github.com/gyp/ynab-reconciler"
+Issues = "https://github.com/gyp/ynab-reconciler/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-mock>=3.14"]
