@@ -157,7 +157,7 @@ ok "smoke test passed"
 step "6/14 Upload to PyPI"
 
 PYPI_JSON="https://pypi.org/pypi/$PROJECT/$VERSION/json"
-already_on_pypi() { curl -fsSL -o /dev/null "$PYPI_JSON"; }
+already_on_pypi() { curl -fsL -o /dev/null "$PYPI_JSON" 2>/dev/null; }
 
 if already_on_pypi; then
   ok "PyPI already has $PROJECT $VERSION — skipping upload"
