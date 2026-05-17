@@ -84,6 +84,44 @@ def resolve_plan_id(client: YnabClient, plan_id: Optional[str]) -> str:
     return chosen.id
 
 
+def resolve_plan(client: YnabClient, plan_id: Optional[str]) -> Plan:
+    """Return the full Plan dataclass (id, name, iso_code) for reconcile.
+
+    Always fetches the `/plans` summary list (small payload, even for power
+    users) rather than calling `/plans/{plan_id}`, whose full plan export
+    downloads the entire budget. Use this when name + iso_code are needed;
+    use resolve_plan_id when only the id is needed.
+    """
+    if plan_id is None and not sys.stdin.isatty():
+        raise click.UsageError(
+            "No plan specified and not running interactively — "
+            "pass --plan or run `ynab-reconciler config set plan_id <id>`."
+        )
+
+    with ui.spinner("Fetching plans…"):
+        plans = client.get_plans()
+    if not plans:
+        raise click.UsageError("No plans found on this YNAB account.")
+
+    if plan_id:
+        match = next((p for p in plans if p.id == plan_id), None)
+        if match is None:
+            raise click.UsageError(
+                f"Plan {plan_id!r} not found on this YNAB account. "
+                "Run `ynab-reconciler init` or check `config show`."
+            )
+        return match
+
+    if len(plans) == 1:
+        only = plans[0]
+        click.echo(f"Using the only available plan: {only.name}")
+        return only
+
+    chosen = ui.select_plan(plans)
+    _offer_save_default("plan_id", chosen.id, "plan")
+    return chosen
+
+
 def resolve_category_group(
     client: YnabClient,
     plan_id: str,
@@ -382,11 +420,11 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
         payee_id = config.resolve_payee_id(payee_id, cfg)
         category_group_id = config.resolve_category_group_id(category_group_id, cfg)
         client = get_client()
-        plan_id = resolve_plan_id(client, plan_id)
-        with ui.spinner("Loading plan…"):
-            accounts = client.get_accounts(plan_id)
-            plan = client.get_plan(plan_id)
+        plan = resolve_plan(client, plan_id)
+        plan_id = plan.id
         native_iso = plan.iso_code
+        with ui.spinner("Loading accounts…"):
+            accounts = client.get_accounts(plan_id)
     except (YnabError, click.UsageError) as e:
         ui.show_error(str(e))
         sys.exit(1)
@@ -417,12 +455,14 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
         if choice == "refresh":
             try:
                 with ui.spinner("Refreshing from YNAB…"):
+                    # Accept the tiny risk that the plan's name or iso_code
+                    # changed mid-session — re-fetching plan metadata every
+                    # refresh would mean an extra round-trip for data that
+                    # almost never changes.
                     accounts = client.get_accounts(plan_id)
-                    plan = client.get_plan(plan_id)
             except YnabError as e:
                 ui.show_error(str(e))
                 continue
-            native_iso = plan.iso_code
             candidates = [a for a in accounts if not a.deleted and not a.closed]
             by_id = {a.id: a for a in candidates}
             ui.show_success(f"Refreshed {len(candidates)} accounts from YNAB.")

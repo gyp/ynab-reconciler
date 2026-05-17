@@ -53,10 +53,6 @@ class YnabClient:
         data = self._get("/plans")
         return [Plan.from_dict(p) for p in data["data"]["plans"]]
 
-    def get_plan(self, plan_id: str) -> Plan:
-        data = self._get(f"/plans/{plan_id}")
-        return Plan.from_dict(data["data"]["plan"])
-
     # --- Payees ---
 
     def get_payees(self, plan_id: str) -> list[Payee]:
