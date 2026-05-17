@@ -100,19 +100,39 @@ class TestLoadConfig:
 
     def test_round_trip(self, isolated_config_dir):
         config.save_config(
-            config.Config(plan_id="p1", payee_id="p2", category_group_id="g3")
+            config.Config(
+                plan_id="p1",
+                plans={"p1": config.PlanDefaults(payee_id="p2", category_group_id="g3")},
+            )
         )
         cfg = config.load_config()
         assert cfg.plan_id == "p1"
-        assert cfg.payee_id == "p2"
-        assert cfg.category_group_id == "g3"
+        assert cfg.defaults_for("p1").payee_id == "p2"
+        assert cfg.defaults_for("p1").category_group_id == "g3"
 
     def test_partial_config(self, isolated_config_dir):
         config.save_config(config.Config(plan_id="only-plan"))
         cfg = config.load_config()
         assert cfg.plan_id == "only-plan"
-        assert cfg.payee_id is None
-        assert cfg.category_group_id is None
+        assert cfg.plans == {}
+        assert cfg.defaults_for("only-plan") == config.PlanDefaults()
+
+    def test_multiple_plans_round_trip(self, isolated_config_dir):
+        config.save_config(
+            config.Config(
+                plan_id="p1",
+                plans={
+                    "p1": config.PlanDefaults(payee_id="pay-1", category_group_id="grp-1"),
+                    "p2": config.PlanDefaults(payee_id="pay-2"),
+                },
+            )
+        )
+        cfg = config.load_config()
+        assert cfg.plan_id == "p1"
+        assert cfg.defaults_for("p1") == config.PlanDefaults(
+            payee_id="pay-1", category_group_id="grp-1"
+        )
+        assert cfg.defaults_for("p2") == config.PlanDefaults(payee_id="pay-2")
 
     def test_malformed_toml_returns_empty(self, isolated_config_dir, capsys):
         isolated_config_dir.mkdir(parents=True)
@@ -121,24 +141,36 @@ class TestLoadConfig:
         assert cfg == config.Config()
         assert "malformed config" in capsys.readouterr().err
 
-    def test_unknown_key_warned_but_ignored(self, isolated_config_dir, capsys):
+    def test_unknown_top_level_key_warned_but_ignored(self, isolated_config_dir, capsys):
         isolated_config_dir.mkdir(parents=True)
         config.config_path().write_text(
-            'schema_version = 1\n[defaults]\nplan_id = "ok"\nbogus_key = "nope"\n'
+            'schema_version = 2\nplan_id = "ok"\nbogus_key = "nope"\n'
         )
         cfg = config.load_config()
         assert cfg.plan_id == "ok"
         err = capsys.readouterr().err
         assert "bogus_key" in err
 
+    def test_unknown_plan_subkey_warned(self, isolated_config_dir, capsys):
+        isolated_config_dir.mkdir(parents=True)
+        config.config_path().write_text(
+            'schema_version = 2\nplan_id = "p1"\n[p1]\npayee_id = "x"\nweird = "y"\n'
+        )
+        cfg = config.load_config()
+        assert cfg.defaults_for("p1").payee_id == "x"
+        assert "p1.weird" in capsys.readouterr().err
+
     def test_non_string_value_ignored(self, isolated_config_dir, capsys):
         isolated_config_dir.mkdir(parents=True)
         config.config_path().write_text(
-            "schema_version = 1\n[defaults]\nplan_id = 42\n"
+            'schema_version = 2\nplan_id = 42\n[p1]\npayee_id = 7\n'
         )
         cfg = config.load_config()
         assert cfg.plan_id is None
-        assert "plan_id" in capsys.readouterr().err
+        assert cfg.defaults_for("p1").payee_id is None
+        err = capsys.readouterr().err
+        assert "plan_id" in err
+        assert "p1.payee_id" in err
 
 
 # ─── save_config ────────────────────────────────────────────────────────────
@@ -156,27 +188,34 @@ class TestSaveConfig:
         mode = stat.S_IMODE(config.config_path().stat().st_mode)
         assert mode == 0o600
 
-    def test_omits_defaults_section_when_empty(self, isolated_config_dir):
+    def test_omits_plan_subtables_when_empty(self, isolated_config_dir):
         config.save_config(config.Config())
         contents = config.config_path().read_text()
-        assert "[defaults]" not in contents
+        assert "[" not in contents  # no subtables
         assert "schema_version" in contents
+
+    def test_drops_empty_plan_subtable(self, isolated_config_dir):
+        config.save_config(
+            config.Config(plan_id="p1", plans={"p1": config.PlanDefaults()})
+        )
+        contents = config.config_path().read_text()
+        assert "[p1]" not in contents
 
 
 # ─── set_config_value ───────────────────────────────────────────────────────
 
 
 class TestSetConfigValue:
-    def test_sets_value(self, isolated_config_dir):
+    def test_sets_plan_id(self, isolated_config_dir):
         config.set_config_value("plan_id", "abc")
         assert config.load_config().plan_id == "abc"
 
-    def test_unset_with_none(self, isolated_config_dir):
+    def test_unset_plan_id_with_none(self, isolated_config_dir):
         config.set_config_value("plan_id", "abc")
         config.set_config_value("plan_id", None)
         assert config.load_config().plan_id is None
 
-    def test_unset_with_empty_string(self, isolated_config_dir):
+    def test_unset_plan_id_with_empty_string(self, isolated_config_dir):
         config.set_config_value("plan_id", "abc")
         config.set_config_value("plan_id", "")
         assert config.load_config().plan_id is None
@@ -184,6 +223,23 @@ class TestSetConfigValue:
     def test_rejects_unknown_key(self, isolated_config_dir):
         with pytest.raises(ValueError, match="Unknown config key"):
             config.set_config_value("bogus", "x")
+
+    def test_plan_scoped_requires_plan_id(self, isolated_config_dir):
+        with pytest.raises(ValueError, match="requires a plan_id"):
+            config.set_config_value("payee_id", "p-1")
+
+    def test_plan_scoped_writes_per_plan(self, isolated_config_dir):
+        config.set_config_value("payee_id", "pay-A", plan_id="plan-A")
+        config.set_config_value("payee_id", "pay-B", plan_id="plan-B")
+        cfg = config.load_config()
+        assert cfg.defaults_for("plan-A").payee_id == "pay-A"
+        assert cfg.defaults_for("plan-B").payee_id == "pay-B"
+
+    def test_unsetting_last_field_drops_subtable(self, isolated_config_dir):
+        config.set_config_value("payee_id", "pay-A", plan_id="plan-A")
+        config.set_config_value("payee_id", None, plan_id="plan-A")
+        cfg = config.load_config()
+        assert "plan-A" not in cfg.plans
 
 
 # ─── Keyring ────────────────────────────────────────────────────────────────
@@ -231,15 +287,22 @@ class TestResolve:
     def test_resolve_plan_id_none_when_unset(self):
         assert config.resolve_plan_id(None, config.Config()) is None
 
-    def test_resolve_payee_id(self):
-        cfg = config.Config(payee_id="from-config")
-        assert config.resolve_payee_id(None, cfg) == "from-config"
-        assert config.resolve_payee_id("from-cli", cfg) == "from-cli"
+    def test_resolve_payee_id_per_plan(self):
+        cfg = config.Config(
+            plans={"p1": config.PlanDefaults(payee_id="from-config")}
+        )
+        assert config.resolve_payee_id(None, cfg, "p1") == "from-config"
+        assert config.resolve_payee_id("from-cli", cfg, "p1") == "from-cli"
+        assert config.resolve_payee_id(None, cfg, "other-plan") is None
+        assert config.resolve_payee_id(None, cfg, None) is None
 
-    def test_resolve_category_group_id(self):
-        cfg = config.Config(category_group_id="from-config")
-        assert config.resolve_category_group_id(None, cfg) == "from-config"
-        assert config.resolve_category_group_id("from-cli", cfg) == "from-cli"
+    def test_resolve_category_group_id_per_plan(self):
+        cfg = config.Config(
+            plans={"p1": config.PlanDefaults(category_group_id="from-config")}
+        )
+        assert config.resolve_category_group_id(None, cfg, "p1") == "from-config"
+        assert config.resolve_category_group_id("from-cli", cfg, "p1") == "from-cli"
+        assert config.resolve_category_group_id(None, cfg, "other-plan") is None
 
     def test_resolve_token_cli_wins(self, stub_keyring):
         config.set_token_in_keyring("from-keyring")

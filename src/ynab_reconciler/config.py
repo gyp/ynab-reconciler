@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
@@ -29,8 +29,10 @@ import tomli_w
 APP_NAME = "ynab-reconciler"
 KEYRING_SERVICE = "ynab-reconciler"
 KEYRING_USERNAME = "default"
-CONFIG_KEYS = ("plan_id", "payee_id", "category_group_id")
-SCHEMA_VERSION = 1
+PLAN_SCOPED_KEYS = ("payee_id", "category_group_id")
+CONFIG_KEYS = ("plan_id", *PLAN_SCOPED_KEYS)
+RESERVED_TOP_LEVEL_KEYS = ("schema_version", "plan_id")
+SCHEMA_VERSION = 2
 
 
 class KeyringUnavailable(Exception):
@@ -38,10 +40,23 @@ class KeyringUnavailable(Exception):
 
 
 @dataclass
-class Config:
-    plan_id: Optional[str] = None
+class PlanDefaults:
     payee_id: Optional[str] = None
     category_group_id: Optional[str] = None
+
+    def is_empty(self) -> bool:
+        return all(getattr(self, f.name) is None for f in fields(self))
+
+
+@dataclass
+class Config:
+    plan_id: Optional[str] = None
+    plans: dict[str, PlanDefaults] = field(default_factory=dict)
+
+    def defaults_for(self, plan_id: Optional[str]) -> PlanDefaults:
+        if plan_id is None:
+            return PlanDefaults()
+        return self.plans.get(plan_id, PlanDefaults())
 
 
 # ─── Paths ──────────────────────────────────────────────────────────────────
@@ -83,29 +98,46 @@ def load_config() -> Config:
         print(f"warning: ignoring malformed config at {path}: {e}", file=sys.stderr)
         return Config()
 
-    defaults = data.get("defaults", {})
-    if not isinstance(defaults, dict):
-        print(f"warning: [defaults] in {path} is not a table; ignoring", file=sys.stderr)
-        defaults = {}
-
     cfg = Config()
-    for field in fields(Config):
-        value = defaults.get(field.name)
-        if value is None:
-            continue
-        if not isinstance(value, str):
+
+    plan_id = data.get("plan_id")
+    if plan_id is not None:
+        if isinstance(plan_id, str):
+            cfg.plan_id = plan_id or None
+        else:
             print(
-                f"warning: ignoring non-string value for defaults.{field.name} in {path}",
+                f"warning: ignoring non-string value for plan_id in {path}",
+                file=sys.stderr,
+            )
+
+    for key, value in data.items():
+        if key in RESERVED_TOP_LEVEL_KEYS:
+            continue
+        if not isinstance(value, dict):
+            print(f"warning: ignoring unknown key {key!r} in {path}", file=sys.stderr)
+            continue
+        cfg.plans[key] = _parse_plan_defaults(key, value, path)
+
+    return cfg
+
+
+def _parse_plan_defaults(plan_id: str, table: dict, path: Path) -> PlanDefaults:
+    pd = PlanDefaults()
+    for sub_key, sub_value in table.items():
+        if sub_key not in PLAN_SCOPED_KEYS:
+            print(
+                f"warning: ignoring unknown key '{plan_id}.{sub_key}' in {path}",
                 file=sys.stderr,
             )
             continue
-        setattr(cfg, field.name, value or None)
-
-    unknown = set(defaults) - set(CONFIG_KEYS)
-    for key in sorted(unknown):
-        print(f"warning: ignoring unknown key 'defaults.{key}' in {path}", file=sys.stderr)
-
-    return cfg
+        if not isinstance(sub_value, str):
+            print(
+                f"warning: ignoring non-string value for '{plan_id}.{sub_key}' in {path}",
+                file=sys.stderr,
+            )
+            continue
+        setattr(pd, sub_key, sub_value or None)
+    return pd
 
 
 def save_config(cfg: Config) -> None:
@@ -114,10 +146,14 @@ def save_config(cfg: Config) -> None:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    defaults = {k: v for k in CONFIG_KEYS if (v := getattr(cfg, k)) is not None}
     doc: dict = {"schema_version": SCHEMA_VERSION}
-    if defaults:
-        doc["defaults"] = defaults
+    if cfg.plan_id is not None:
+        doc["plan_id"] = cfg.plan_id
+    for pid in sorted(cfg.plans):
+        pd = cfg.plans[pid]
+        if pd.is_empty():
+            continue
+        doc[pid] = {k: getattr(pd, k) for k in PLAN_SCOPED_KEYS if getattr(pd, k) is not None}
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(tomli_w.dumps(doc).encode("utf-8"))
@@ -125,14 +161,33 @@ def save_config(cfg: Config) -> None:
     os.replace(tmp, path)
 
 
-def set_config_value(key: str, value: Optional[str]) -> None:
-    """Set or unset a single config key. Pass None or an empty string to unset."""
+def set_config_value(
+    key: str, value: Optional[str], plan_id: Optional[str] = None
+) -> None:
+    """Set or unset a single config key. Pass None or an empty string to unset.
+
+    `plan_id` is required for plan-scoped keys (payee_id, category_group_id)
+    and ignored for top-level keys (plan_id).
+    """
     if key not in CONFIG_KEYS:
         raise ValueError(
             f"Unknown config key: {key!r}. Valid keys: {', '.join(CONFIG_KEYS)}"
         )
     cfg = load_config()
-    setattr(cfg, key, value or None)
+    normalised = value or None
+
+    if key == "plan_id":
+        cfg.plan_id = normalised
+    else:
+        if not plan_id:
+            raise ValueError(f"Setting {key!r} requires a plan_id.")
+        pd = cfg.plans.get(plan_id, PlanDefaults())
+        setattr(pd, key, normalised)
+        if pd.is_empty():
+            cfg.plans.pop(plan_id, None)
+        else:
+            cfg.plans[plan_id] = pd
+
     save_config(cfg)
 
 
@@ -201,19 +256,23 @@ def resolve_token(cli_value: Optional[str] = None) -> Optional[str]:
     return get_token_from_keyring()
 
 
-def _resolve(cli_value: Optional[str], cfg: Config, attr: str) -> Optional[str]:
+def resolve_plan_id(cli_value: Optional[str], cfg: Config) -> Optional[str]:
     if cli_value:
         return cli_value
-    return getattr(cfg, attr)
+    return cfg.plan_id
 
 
-def resolve_plan_id(cli_value: Optional[str], cfg: Config) -> Optional[str]:
-    return _resolve(cli_value, cfg, "plan_id")
+def resolve_payee_id(
+    cli_value: Optional[str], cfg: Config, plan_id: Optional[str]
+) -> Optional[str]:
+    if cli_value:
+        return cli_value
+    return cfg.defaults_for(plan_id).payee_id
 
 
-def resolve_payee_id(cli_value: Optional[str], cfg: Config) -> Optional[str]:
-    return _resolve(cli_value, cfg, "payee_id")
-
-
-def resolve_category_group_id(cli_value: Optional[str], cfg: Config) -> Optional[str]:
-    return _resolve(cli_value, cfg, "category_group_id")
+def resolve_category_group_id(
+    cli_value: Optional[str], cfg: Config, plan_id: Optional[str]
+) -> Optional[str]:
+    if cli_value:
+        return cli_value
+    return cfg.defaults_for(plan_id).category_group_id

@@ -43,18 +43,25 @@ def _interactive_token_prompt_and_store() -> str:
     return token
 
 
-def _offer_save_default(key: str, value: str, label: str) -> None:
+def _offer_save_default(
+    key: str, value: str, label: str, plan_id: Optional[str] = None
+) -> None:
     """After an interactive pick, offer to save the choice as the default.
 
     Silent on non-TTY. Skips if the value is already the saved default.
+    For plan-scoped keys, `plan_id` selects the subtable to save under.
     """
     if not ui.is_interactive():
         return
     cfg = config.load_config()
-    if getattr(cfg, key) == value:
+    if key == "plan_id":
+        current = cfg.plan_id
+    else:
+        current = getattr(cfg.defaults_for(plan_id), key)
+    if current == value:
         return
     if ui.confirm_save_default(label):
-        config.set_config_value(key, value)
+        config.set_config_value(key, value, plan_id=plan_id)
         ui.show_saved_default(label)
 
 
@@ -158,8 +165,9 @@ def resolve_category_group(
         click.echo(f"Using the only available category group: {only.name}")
         return only
 
-    chosen = ui.select_category_group(visible)
-    _offer_save_default("category_group_id", chosen.id, "category group")
+    saved_default = config.load_config().defaults_for(plan_id).category_group_id
+    chosen = ui.select_category_group(visible, default=saved_default)
+    _offer_save_default("category_group_id", chosen.id, "category group", plan_id=plan_id)
     return chosen
 
 
@@ -417,11 +425,11 @@ def cmd_reconcile(plan_id: Optional[str], payee_id: Optional[str], category_grou
     try:
         cfg = config.load_config()
         plan_id = config.resolve_plan_id(plan_id, cfg)
-        payee_id = config.resolve_payee_id(payee_id, cfg)
-        category_group_id = config.resolve_category_group_id(category_group_id, cfg)
         client = get_client()
         plan = resolve_plan(client, plan_id)
         plan_id = plan.id
+        payee_id = config.resolve_payee_id(payee_id, cfg, plan_id)
+        category_group_id = config.resolve_category_group_id(category_group_id, cfg, plan_id)
         native_iso = plan.iso_code
         with ui.spinner("Loading accounts…"):
             accounts = client.get_accounts(plan_id)
@@ -572,39 +580,79 @@ def cmd_config_show() -> None:
     click.echo(f"Config file: {path}")
     click.echo(f"  exists: {'yes' if path.exists() else 'no'}")
     click.echo("")
-    click.echo("Defaults:")
-    for key in config.CONFIG_KEYS:
-        value = getattr(cfg, key)
-        display = value if value is not None else "(unset)"
-        click.echo(f"  {key:<20} {display}")
+    active = cfg.plan_id if cfg.plan_id is not None else "(unset)"
+    click.echo(f"Active plan_id: {active}")
+
+    plan_ids = sorted(cfg.plans)
+    if cfg.plan_id and cfg.plan_id not in cfg.plans:
+        plan_ids.append(cfg.plan_id)
+
+    if not plan_ids:
+        click.echo("  (no per-plan defaults saved)")
+        return
+
+    for pid in plan_ids:
+        pd = cfg.defaults_for(pid)
+        marker = " (active)" if pid == cfg.plan_id else ""
+        click.echo("")
+        click.echo(f"Plan {pid}{marker}:")
+        for key in config.PLAN_SCOPED_KEYS:
+            value = getattr(pd, key)
+            display = value if value is not None else "(unset)"
+            click.echo(f"  {key:<20} {display}")
+
+
+def _resolve_set_plan_id(cli_plan: Optional[str], cfg: config.Config) -> str:
+    plan_id = cli_plan or cfg.plan_id
+    if not plan_id:
+        raise click.UsageError(
+            "No plan specified. Pass --plan <id> or set the active plan first "
+            "with `config set plan_id <id>`."
+        )
+    return plan_id
 
 
 @cmd_config.command("set")
 @click.argument("key")
 @click.argument("value")
-def cmd_config_set(key: str, value: str) -> None:
-    """Set a default. Valid keys: plan_id, payee_id, category_group_id."""
+@click.option("--plan", "plan_id", default=None, help="Plan ID for plan-scoped keys (payee_id, category_group_id). Defaults to the currently active plan.")
+def cmd_config_set(key: str, value: str, plan_id: Optional[str]) -> None:
+    """Set a default. Valid keys: plan_id, payee_id, category_group_id.
+
+    `payee_id` and `category_group_id` are stored per plan.
+    """
     try:
-        config.set_config_value(key, value)
-    except ValueError as e:
+        if key in config.PLAN_SCOPED_KEYS:
+            plan_id = _resolve_set_plan_id(plan_id, config.load_config())
+            config.set_config_value(key, value, plan_id=plan_id)
+            ui.show_success(f"[{plan_id}] {key} = {value}")
+        else:
+            config.set_config_value(key, value)
+            if value:
+                ui.show_success(f"{key} = {value}")
+            else:
+                ui.show_success(f"{key} unset")
+    except (ValueError, click.UsageError) as e:
         ui.show_error(str(e))
         sys.exit(1)
-    if value:
-        ui.show_success(f"{key} = {value}")
-    else:
-        ui.show_success(f"{key} unset")
 
 
 @cmd_config.command("unset")
 @click.argument("key")
-def cmd_config_unset(key: str) -> None:
+@click.option("--plan", "plan_id", default=None, help="Plan ID for plan-scoped keys. Defaults to the currently active plan.")
+def cmd_config_unset(key: str, plan_id: Optional[str]) -> None:
     """Unset a default."""
     try:
-        config.set_config_value(key, None)
-    except ValueError as e:
+        if key in config.PLAN_SCOPED_KEYS:
+            plan_id = _resolve_set_plan_id(plan_id, config.load_config())
+            config.set_config_value(key, None, plan_id=plan_id)
+            ui.show_success(f"[{plan_id}] {key} unset")
+        else:
+            config.set_config_value(key, None)
+            ui.show_success(f"{key} unset")
+    except (ValueError, click.UsageError) as e:
         ui.show_error(str(e))
         sys.exit(1)
-    ui.show_success(f"{key} unset")
 
 
 @cmd_config.command("path")
@@ -656,20 +704,24 @@ def cmd_init() -> None:
         return
 
     try:
-        plan = _pick_plan(client)
+        plan = _pick_plan(client, default_id=config.load_config().plan_id)
         if plan is None:
             return
         config.set_config_value("plan_id", plan.id)
         ui.show_saved_default("plan")
 
-        group = _pick_category_group(client, plan.id)
+        plan_defaults = config.load_config().defaults_for(plan.id)
+
+        group = _pick_category_group(
+            client, plan.id, default_id=plan_defaults.category_group_id
+        )
         if group is not None:
-            config.set_config_value("category_group_id", group.id)
+            config.set_config_value("category_group_id", group.id, plan_id=plan.id)
             ui.show_saved_default("category group")
 
-        payee = _pick_payee(client, plan.id)
+        payee = _pick_payee(client, plan.id, default_id=plan_defaults.payee_id)
         if payee is not None:
-            config.set_config_value("payee_id", payee.id)
+            config.set_config_value("payee_id", payee.id, plan_id=plan.id)
             ui.show_saved_default("payee")
     except YnabError as e:
         ui.show_error(str(e))
@@ -678,7 +730,7 @@ def cmd_init() -> None:
     ui.show_success("All set. Run `ynab-reconciler reconcile` to begin.")
 
 
-def _pick_plan(client: YnabClient) -> Optional[Plan]:
+def _pick_plan(client: YnabClient, default_id: Optional[str] = None) -> Optional[Plan]:
     with ui.spinner("Fetching plans…"):
         plans = client.get_plans()
     if not plans:
@@ -687,10 +739,12 @@ def _pick_plan(client: YnabClient) -> Optional[Plan]:
     if len(plans) == 1:
         ui.show_info(f"Using the only available plan: {plans[0].name}")
         return plans[0]
-    return ui.select_plan(plans)
+    return ui.select_plan(plans, default=default_id)
 
 
-def _pick_category_group(client: YnabClient, plan_id: str) -> Optional[CategoryGroup]:
+def _pick_category_group(
+    client: YnabClient, plan_id: str, default_id: Optional[str] = None
+) -> Optional[CategoryGroup]:
     with ui.spinner("Fetching category groups…"):
         groups = client.get_category_groups(plan_id)
     visible = [
@@ -704,10 +758,12 @@ def _pick_category_group(client: YnabClient, plan_id: str) -> Optional[CategoryG
     if len(visible) == 1:
         ui.show_info(f"Using the only available category group: {visible[0].name}")
         return visible[0]
-    return ui.select_category_group(visible)
+    return ui.select_category_group(visible, default=default_id)
 
 
-def _pick_payee(client: YnabClient, plan_id: str) -> Optional[Payee]:
+def _pick_payee(
+    client: YnabClient, plan_id: str, default_id: Optional[str] = None
+) -> Optional[Payee]:
     with ui.spinner("Fetching payees…"):
         payees = client.get_payees(plan_id)
     visible = sorted(
@@ -717,4 +773,4 @@ def _pick_payee(client: YnabClient, plan_id: str) -> Optional[Payee]:
     if not visible:
         ui.show_warning("No payees found in this plan.")
         return None
-    return ui.select_payee(visible)
+    return ui.select_payee(visible, default=default_id)

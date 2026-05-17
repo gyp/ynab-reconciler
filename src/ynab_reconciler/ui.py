@@ -141,17 +141,21 @@ def _fallback_pick(items, label_fn, kind: str):
         return items[idx - 1]
 
 
-def select_plan(plans: list[Plan]) -> Plan:
+def select_plan(plans: list[Plan], default: Optional[str] = None) -> Plan:
     if not is_interactive():
         return _fallback_pick(plans, lambda p: p.name, "Plans")
 
     choices = [
         questionary.Choice(
-            title=[("class:answer", p.name), ("class:instruction", f"  {p.id}")],
+            title=_annotate_saved_default(
+                [("class:answer", p.name), ("class:instruction", f"  {p.id}")],
+                is_saved=(default is not None and p.id == default),
+            ),
             value=p,
         )
         for p in plans
     ]
+    default_value = next((p for p in plans if p.id == default), None) if default else None
     answer = questionary.select(
         "Select a plan",
         choices=choices,
@@ -159,21 +163,30 @@ def select_plan(plans: list[Plan]) -> Plan:
         qmark="❯",
         use_shortcuts=False,
         instruction="(↑/↓ to move, Enter to pick)",
+        default=default_value,
     ).ask()
     if answer is None:
         raise click.Abort()
     return answer
 
 
-def select_payee(payees: list[Payee]) -> Optional[Payee]:
-    """Pick a payee, or return None if the user picks 'Skip'."""
+def select_payee(
+    payees: list[Payee], default: Optional[str] = None
+) -> Optional[Payee]:
+    """Pick a payee, or return None if the user picks 'Skip'.
+
+    If `default` matches a payee's id, that payee is pre-selected.
+    """
     if not is_interactive():
         return _fallback_pick(payees, lambda p: p.name, "Payees")
 
     choices: list[Union[questionary.Choice, questionary.Separator]] = [
         questionary.Choice(
             title=_SearchableTitle(
-                [("class:answer", p.name), ("class:instruction", f"  {p.id}")]
+                _annotate_saved_default(
+                    [("class:answer", p.name), ("class:instruction", f"  {p.id}")],
+                    is_saved=(default is not None and p.id == default),
+                )
             ),
             value=p,
         )
@@ -188,6 +201,7 @@ def select_payee(payees: list[Payee]) -> Optional[Payee]:
             value=None,
         )
     )
+    default_value = next((p for p in payees if p.id == default), None) if default else None
     answer = questionary.select(
         "Select a payee",
         choices=choices,
@@ -196,34 +210,55 @@ def select_payee(payees: list[Payee]) -> Optional[Payee]:
         instruction="(↑/↓ move · Enter pick · type to search)",
         use_search_filter=True,
         use_jk_keys=False,
+        default=default_value,
     ).ask()
     return answer  # may be None (user picked Skip) or the Payee
 
 
-def select_category_group(groups: list[CategoryGroup]) -> CategoryGroup:
+def select_category_group(
+    groups: list[CategoryGroup], default: Optional[str] = None
+) -> CategoryGroup:
     if not is_interactive():
         return _fallback_pick(groups, lambda g: g.name, "Category groups")
 
     choices = [
         questionary.Choice(
-            title=[
-                ("class:answer", g.name),
-                ("class:instruction", f"  ({len(g.categories)} categories)"),
-            ],
+            title=_annotate_saved_default(
+                [
+                    ("class:answer", g.name),
+                    ("class:instruction", f"  ({len(g.categories)} categories)"),
+                ],
+                is_saved=(default is not None and g.id == default),
+            ),
             value=g,
         )
         for g in groups
     ]
+    default_value = next((g for g in groups if g.id == default), None) if default else None
     answer = questionary.select(
         "Select a category group",
         choices=choices,
         style=QUESTIONARY_STYLE,
         qmark="❯",
         instruction="(↑/↓ to move, Enter to pick)",
+        default=default_value,
     ).ask()
     if answer is None:
         raise click.Abort()
     return answer
+
+
+SAVED_DEFAULT_STYLE = "fg:#ffaf00 bold"
+
+
+def _annotate_saved_default(
+    title: list[tuple[str, str]], *, is_saved: bool
+) -> list[tuple[str, str]]:
+    """Append a colored '(saved default)' marker if this choice matches the
+    previously saved selection."""
+    if not is_saved:
+        return title
+    return [*title, (SAVED_DEFAULT_STYLE, "  ← saved default")]
 
 
 class _SearchableTitle(list):
