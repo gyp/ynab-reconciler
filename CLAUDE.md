@@ -40,7 +40,12 @@ src/ynab_reconciler/
   ui.py          — Rich + questionary primitives, with TTY-fallback path
   api/client.py  — YnabClient (requests-based, BASE_URL = https://api.ynab.com/v1)
   api/models.py  — dataclasses for Plan / Account / Payee / Category / CategoryGroup / Transaction
-tests/           — one test file per source module
+  connections/   — external balance sources (isolated from budgeting logic)
+    errors.py    — ConnectionError + IbkrFlex{,Auth,ReportNotReady} errors
+    models.py    — FetchedBalance + balance-field constants
+    ibkr_flex.py — IbkrFlexClient (two-step Flex Web Service flow + XML parsing)
+    registry.py  — type→fetch map + select_balance (the seam for new providers)
+tests/           — one test file per source module (XML fixtures in tests/fixtures/)
 packaging/
   Formula/ynab-reconciler.rb  — canonical Homebrew formula (tap repo is downstream)
   RELEASING.md                — step-by-step release process
@@ -67,7 +72,17 @@ api-1.json       — YNAB OpenAPI spec, vendored for reference
   (token only) → interactive prompt. `config.resolve_*` functions implement this.
 - **`config.py` is the single boundary** for `keyring`, `tomllib`, `tomli_w`,
   and `platformdirs`. Nothing else in the codebase should import them — see the
-  module docstring.
+  module docstring. (Connection access tokens also live in the keychain, stored
+  by `config.py` under username `connection:<name>`.)
+- **Connections** ([connections/](src/ynab_reconciler/connections/)): a
+  *connection* is a read-only external balance source; the first is Interactive
+  Brokers via the **Flex Web Service** (a two-step HTTPS XML request, end-of-day
+  data). A *pairing* links a YNAB `account.id` to a connection's reported figure
+  (default `net_liquidation`). When a paired account is reconciled, its balance
+  is fetched once per run (cached) and pre-fills the statement prompt as
+  `(value, currency)`, reusing the existing currency-conversion path. New
+  provider types plug into `connections/registry.py`; nothing here imports
+  `keyring`/`tomllib` (secrets are passed in by the caller).
 
 ## CLI surface
 
@@ -75,7 +90,8 @@ Top-level commands are grouped in `--help` via `GroupedGroup` in
 [main.py:132](src/ynab_reconciler/main.py#L132):
 
 - **Main:** `init`, `reconcile`
-- **Settings:** `auth {login,logout,status}`, `config {show,set,unset,path}`
+- **Settings:** `auth {login,logout,status}`, `config {show,set,unset,path}`,
+  `connections {add,list,remove,fetch,pair,unpair}`
 - **Utilities:** `plans`, `accounts`, `payees`, `category-groups`
 
 Running with no subcommand invokes `reconcile` (see
@@ -83,7 +99,11 @@ Running with no subcommand invokes `reconcile` (see
 
 Config keys: `plan_id`, `payee_id`, `category_group_id`. Stored under
 `~/.config/ynab-reconciler/config.toml` (honours `$XDG_CONFIG_HOME` on every
-platform; falls back to platformdirs on Windows when XDG is unset).
+platform; falls back to platformdirs on Windows when XDG is unset). The file is
+`schema_version = 3`: connections live in `[connections.<name>]` tables
+(`type`, `query_id`) and pairings in `[pairings.<ynab_account_id>]` tables
+(`connection`, `ib_account_id`, `field`) — both top-level and reserved so the
+plan-table loader skips them.
 
 ## Tests & dev loop
 

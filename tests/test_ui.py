@@ -344,3 +344,125 @@ class TestSelectCategoryGroupFallback:
             CategoryGroup(id="g2", name="Fun", hidden=False, deleted=False, categories=[]),
         ]
         assert ui.select_category_group(groups).id == "g1"
+
+
+class TestAskStatementBalanceDefault:
+    """The connection-balance pre-fill flows through the same parse path."""
+
+    def test_enter_accepts_prefilled_default(self, monkeypatch):
+        # Pressing Enter makes click.prompt return the default it was handed.
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: kw.get("default", ""))
+        amount, iso = ui.ask_statement_balance(
+            _account(), default=(50000.0, "USD", "ibkr net liquidation")
+        )
+        assert amount == 50000.0
+        assert iso == "USD"
+
+    def test_default_without_currency(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: kw.get("default", ""))
+        amount, iso = ui.ask_statement_balance(
+            _account(), default=(1234.5, None, "ibkr cash")
+        )
+        assert amount == 1234.5
+        assert iso is None
+
+    def test_user_can_type_over_default(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "999")
+        amount, iso = ui.ask_statement_balance(
+            _account(), default=(50000.0, "USD", "ibkr")
+        )
+        assert amount == 999.0
+        assert iso is None
+
+    def test_no_default_preserves_accept_cleared(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "")
+        answer = ui.ask_statement_balance(_account())
+        assert answer == (_account().cleared_balance_in_units(), None)
+
+
+class TestSelectFromDefault:
+    def test_default_is_marked_and_preselected(self, monkeypatch, capsys):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: kw.get("default", "1"))
+        result = ui.select_from("Pick", ["a", "b", "c"], lambda x: x, default="b")
+        assert result == "b"
+        assert "←" in capsys.readouterr().out
+
+    def test_default_absent_falls_back_to_first(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: kw.get("default", "1"))
+        result = ui.select_from("Pick", ["a", "b"], lambda x: x, default="zzz")
+        assert result == "a"
+
+
+class TestSelectFromCancel:
+    def test_cancel_entry_returns_sentinel(self, monkeypatch, capsys):
+        # cancel is the last numbered option (len+1); pick it.
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "3")
+        result = ui.select_from("Pick", ["a", "b"], lambda x: x, cancel="Cancel")
+        assert result is ui.CANCEL
+        assert "Cancel" in capsys.readouterr().out
+
+    def test_without_cancel_no_extra_option(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "1")
+        assert ui.select_from("Pick", ["a", "b"], lambda x: x) == "a"
+
+
+class TestSelectFromStyleFor:
+    def test_glyph_in_label_shows_on_non_tty(self, monkeypatch, capsys):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "1")
+        ui.select_from(
+            "Pick",
+            ["a", "b"],
+            lambda x: ("✓ " if x == "a" else "  ") + x,
+            style_for=lambda x: "fg:#5fd75f" if x == "a" else "class:answer",
+        )
+        out = capsys.readouterr().out
+        assert "✓ a" in out  # marker rendered in the numbered fallback too
+
+
+class TestSelectFromExtra:
+    def test_extra_entry_returns_its_value(self, monkeypatch, capsys):
+        sentinel = object()
+        # options a,b => 1,2 ; extra "Remove" => 3 ; cancel "Back" => 4
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "3")
+        result = ui.select_from(
+            "Broker", ["a", "b"], lambda x: x,
+            extra=[("Remove", sentinel)], cancel="Back",
+        )
+        assert result is sentinel
+        out = capsys.readouterr().out
+        assert "3. Remove" in out and "4. Back" in out
+
+    def test_cancel_after_extra_returns_cancel(self, monkeypatch):
+        sentinel = object()
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "4")
+        result = ui.select_from(
+            "Broker", ["a", "b"], lambda x: x,
+            extra=[("Remove", sentinel)], cancel="Back",
+        )
+        assert result is ui.CANCEL
+
+    def test_regular_option_still_selectable_with_extra(self, monkeypatch):
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: "2")
+        result = ui.select_from(
+            "Broker", ["a", "b"], lambda x: x,
+            extra=[("Remove", object())], cancel="Back",
+        )
+        assert result == "b"
+
+
+class TestAskStatementBalanceConvertedDisplay:
+    def test_default_native_shown_in_label(self, monkeypatch):
+        captured = {}
+
+        def fake_prompt(label, **kw):
+            captured["label"] = label
+            return kw.get("default", "")
+
+        monkeypatch.setattr("click.prompt", fake_prompt)
+        amount, iso = ui.ask_statement_balance(
+            _account(),
+            default=(16973.80, "EUR", "ibkr net liquidation"),
+            default_native="≈ 6,619,782 HUF",
+        )
+        assert (amount, iso) == (16973.80, "EUR")  # entered in broker currency
+        assert "≈ 6,619,782 HUF" in captured["label"]  # converted shown in parens

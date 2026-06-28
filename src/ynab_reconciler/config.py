@@ -31,8 +31,8 @@ KEYRING_SERVICE = "ynab-reconciler"
 KEYRING_USERNAME = "default"
 PLAN_SCOPED_KEYS = ("payee_id", "category_group_id")
 CONFIG_KEYS = ("plan_id", *PLAN_SCOPED_KEYS)
-RESERVED_TOP_LEVEL_KEYS = ("schema_version", "plan_id")
-SCHEMA_VERSION = 2
+RESERVED_TOP_LEVEL_KEYS = ("schema_version", "plan_id", "connections", "pairings")
+SCHEMA_VERSION = 3
 
 
 class KeyringUnavailable(Exception):
@@ -49,9 +49,38 @@ class PlanDefaults:
 
 
 @dataclass
+class Connection:
+    """A configured remote balance source (e.g. an Interactive Brokers Flex query).
+
+    Non-secret config only — the access token lives in the OS keychain, keyed by
+    the connection's name (see get/set/delete_connection_secret).
+    """
+
+    type: str
+    query_id: str
+
+
+@dataclass
+class Pairing:
+    """Links a YNAB account to a connection's reported balance.
+
+    `account_id` (a globally-unique YNAB UUID) is the dict key in Config.pairings,
+    so it isn't stored here. `ib_account_id` selects which account within the
+    connection's report to read; `field` selects which figure (see the
+    connections registry for valid values).
+    """
+
+    connection: str
+    ib_account_id: str
+    field: str = "net_liquidation"
+
+
+@dataclass
 class Config:
     plan_id: Optional[str] = None
     plans: dict[str, PlanDefaults] = field(default_factory=dict)
+    connections: dict[str, Connection] = field(default_factory=dict)
+    pairings: dict[str, Pairing] = field(default_factory=dict)
 
     def defaults_for(self, plan_id: Optional[str]) -> PlanDefaults:
         if plan_id is None:
@@ -118,6 +147,9 @@ def load_config() -> Config:
             continue
         cfg.plans[key] = _parse_plan_defaults(key, value, path)
 
+    cfg.connections = _parse_connections(data.get("connections"), path)
+    cfg.pairings = _parse_pairings(data.get("pairings"), path)
+
     return cfg
 
 
@@ -140,6 +172,65 @@ def _parse_plan_defaults(plan_id: str, table: dict, path: Path) -> PlanDefaults:
     return pd
 
 
+def _parse_connections(raw, path: Path) -> dict[str, Connection]:
+    out: dict[str, Connection] = {}
+    if raw is None:
+        return out
+    if not isinstance(raw, dict):
+        print(f"warning: ignoring non-table 'connections' in {path}", file=sys.stderr)
+        return out
+    for name, table in raw.items():
+        if not isinstance(table, dict):
+            print(
+                f"warning: ignoring malformed connection '{name}' in {path}",
+                file=sys.stderr,
+            )
+            continue
+        ctype = table.get("type")
+        query_id = table.get("query_id")
+        if not isinstance(ctype, str) or not isinstance(query_id, str):
+            print(
+                f"warning: ignoring connection '{name}' (missing type/query_id) in {path}",
+                file=sys.stderr,
+            )
+            continue
+        out[name] = Connection(type=ctype, query_id=query_id)
+    return out
+
+
+def _parse_pairings(raw, path: Path) -> dict[str, Pairing]:
+    out: dict[str, Pairing] = {}
+    if raw is None:
+        return out
+    if not isinstance(raw, dict):
+        print(f"warning: ignoring non-table 'pairings' in {path}", file=sys.stderr)
+        return out
+    for account_id, table in raw.items():
+        if not isinstance(table, dict):
+            print(
+                f"warning: ignoring malformed pairing '{account_id}' in {path}",
+                file=sys.stderr,
+            )
+            continue
+        connection = table.get("connection")
+        ib_account_id = table.get("ib_account_id")
+        if not isinstance(connection, str) or not isinstance(ib_account_id, str):
+            print(
+                f"warning: ignoring pairing '{account_id}' (missing connection/"
+                f"ib_account_id) in {path}",
+                file=sys.stderr,
+            )
+            continue
+        field_value = table.get("field")
+        field_value = field_value if isinstance(field_value, str) and field_value else "net_liquidation"
+        out[account_id] = Pairing(
+            connection=connection,
+            ib_account_id=ib_account_id,
+            field=field_value,
+        )
+    return out
+
+
 def save_config(cfg: Config) -> None:
     """Atomically write config to disk. Creates the directory with mode 0700
     and the file with mode 0600."""
@@ -154,6 +245,21 @@ def save_config(cfg: Config) -> None:
         if pd.is_empty():
             continue
         doc[pid] = {k: getattr(pd, k) for k in PLAN_SCOPED_KEYS if getattr(pd, k) is not None}
+
+    if cfg.connections:
+        doc["connections"] = {
+            name: {"type": c.type, "query_id": c.query_id}
+            for name, c in sorted(cfg.connections.items())
+        }
+    if cfg.pairings:
+        doc["pairings"] = {
+            account_id: {
+                "connection": p.connection,
+                "ib_account_id": p.ib_account_id,
+                "field": p.field,
+            }
+            for account_id, p in sorted(cfg.pairings.items())
+        }
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(tomli_w.dumps(doc).encode("utf-8"))
@@ -191,6 +297,61 @@ def set_config_value(
     save_config(cfg)
 
 
+# ─── Connections & pairings ─────────────────────────────────────────────────
+
+
+def list_connections() -> dict[str, Connection]:
+    """Return the configured connections, keyed by name."""
+    return load_config().connections
+
+
+def get_connection(name: str) -> Optional[Connection]:
+    return load_config().connections.get(name)
+
+
+def upsert_connection(name: str, connection: Connection) -> None:
+    """Add or replace a connection's non-secret config."""
+    cfg = load_config()
+    cfg.connections[name] = connection
+    save_config(cfg)
+
+
+def remove_connection(name: str) -> bool:
+    """Delete a connection, its stored secret, and any pairings that reference it.
+
+    Returns True if a connection was removed."""
+    cfg = load_config()
+    if name not in cfg.connections:
+        return False
+    del cfg.connections[name]
+    cfg.pairings = {
+        acct: p for acct, p in cfg.pairings.items() if p.connection != name
+    }
+    save_config(cfg)
+    delete_connection_secret(name)
+    return True
+
+
+def pairing_for(account_id: str) -> Optional[Pairing]:
+    return load_config().pairings.get(account_id)
+
+
+def set_pairing(account_id: str, pairing: Pairing) -> None:
+    cfg = load_config()
+    cfg.pairings[account_id] = pairing
+    save_config(cfg)
+
+
+def remove_pairing(account_id: str) -> bool:
+    """Delete a pairing. Returns True if one was removed."""
+    cfg = load_config()
+    if account_id not in cfg.pairings:
+        return False
+    del cfg.pairings[account_id]
+    save_config(cfg)
+    return True
+
+
 # ─── Keyring ────────────────────────────────────────────────────────────────
 
 
@@ -219,6 +380,41 @@ def delete_token_from_keyring() -> bool:
     False if there was nothing to delete (or the backend is unavailable)."""
     try:
         keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return True
+    except keyring.errors.PasswordDeleteError:
+        return False
+    except keyring.errors.KeyringError:
+        return False
+
+
+def _connection_username(name: str) -> str:
+    """Keyring username under which a connection's secret is stored."""
+    return f"connection:{name}"
+
+
+def get_connection_secret(name: str) -> Optional[str]:
+    """Return a connection's stored access token, or None if absent/unavailable."""
+    try:
+        secret = keyring.get_password(KEYRING_SERVICE, _connection_username(name))
+    except keyring.errors.KeyringError:
+        return None
+    return secret or None
+
+
+def set_connection_secret(name: str, secret: str) -> None:
+    """Store a connection's access token in the OS keychain.
+
+    Raises KeyringUnavailable if the backend can't be reached."""
+    try:
+        keyring.set_password(KEYRING_SERVICE, _connection_username(name), secret)
+    except keyring.errors.KeyringError as e:
+        raise KeyringUnavailable(str(e)) from e
+
+
+def delete_connection_secret(name: str) -> bool:
+    """Delete a connection's stored token. Returns True if something was deleted."""
+    try:
+        keyring.delete_password(KEYRING_SERVICE, _connection_username(name))
         return True
     except keyring.errors.PasswordDeleteError:
         return False

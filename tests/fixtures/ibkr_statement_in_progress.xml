@@ -1,0 +1,5 @@
+<FlexStatementResponse timestamp="01 February, 2024 12:00 PM EST">
+<Status>Warn</Status>
+<ErrorCode>1019</ErrorCode>
+<ErrorMessage>Statement generation in progress. Please try again shortly.</ErrorMessage>
+</FlexStatementResponse>

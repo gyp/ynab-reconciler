@@ -314,3 +314,105 @@ class TestResolve:
 
     def test_resolve_token_none_when_nothing_set(self, stub_keyring):
         assert config.resolve_token() is None
+
+
+# ─── Connections & pairings ──────────────────────────────────────────────────
+
+
+class TestConnections:
+    def test_round_trip(self, isolated_config_dir):
+        config.upsert_connection(
+            "ibkr", config.Connection(type="ibkr-flex", query_id="123456")
+        )
+        cfg = config.load_config()
+        assert cfg.connections["ibkr"].type == "ibkr-flex"
+        assert cfg.connections["ibkr"].query_id == "123456"
+
+    def test_connections_persist_alongside_plan_defaults(self, isolated_config_dir):
+        config.save_config(
+            config.Config(
+                plan_id="p1",
+                plans={"p1": config.PlanDefaults(payee_id="pay-1")},
+                connections={"ibkr": config.Connection("ibkr-flex", "q1")},
+            )
+        )
+        cfg = config.load_config()
+        assert cfg.plan_id == "p1"
+        assert cfg.defaults_for("p1").payee_id == "pay-1"
+        assert cfg.connections["ibkr"].query_id == "q1"
+        # connection name must not be misread as a plan table
+        assert "ibkr" not in cfg.plans
+
+    def test_remove_connection_clears_secret_and_pairings(
+        self, isolated_config_dir, stub_keyring
+    ):
+        config.upsert_connection("ibkr", config.Connection("ibkr-flex", "q1"))
+        config.set_connection_secret("ibkr", "tok")
+        config.set_pairing(
+            "acct-1", config.Pairing(connection="ibkr", ib_account_id="U1")
+        )
+
+        assert config.remove_connection("ibkr") is True
+
+        cfg = config.load_config()
+        assert "ibkr" not in cfg.connections
+        assert cfg.pairings == {}
+        assert config.get_connection_secret("ibkr") is None
+
+    def test_remove_missing_connection_returns_false(self, isolated_config_dir):
+        assert config.remove_connection("nope") is False
+
+    def test_malformed_connection_is_skipped(self, isolated_config_dir, capsys):
+        config.config_path().parent.mkdir(parents=True, exist_ok=True)
+        config.config_path().write_text(
+            'schema_version = 3\n[connections.broken]\ntype = "ibkr-flex"\n'
+        )  # no query_id
+        cfg = config.load_config()
+        assert cfg.connections == {}
+        assert "broken" in capsys.readouterr().err
+
+
+class TestPairings:
+    def test_round_trip_with_default_field(self, isolated_config_dir):
+        config.set_pairing(
+            "acct-1", config.Pairing(connection="ibkr", ib_account_id="U1")
+        )
+        p = config.pairing_for("acct-1")
+        assert p is not None
+        assert p.connection == "ibkr"
+        assert p.ib_account_id == "U1"
+        assert p.field == "net_liquidation"
+
+    def test_custom_field_persists(self, isolated_config_dir):
+        config.set_pairing(
+            "acct-1",
+            config.Pairing(connection="ibkr", ib_account_id="U1", field="cash"),
+        )
+        assert config.pairing_for("acct-1").field == "cash"
+
+    def test_remove_pairing(self, isolated_config_dir):
+        config.set_pairing("acct-1", config.Pairing("ibkr", "U1"))
+        assert config.remove_pairing("acct-1") is True
+        assert config.pairing_for("acct-1") is None
+        assert config.remove_pairing("acct-1") is False
+
+
+class TestConnectionSecrets:
+    def test_set_get_delete(self, stub_keyring):
+        assert config.get_connection_secret("ibkr") is None
+        config.set_connection_secret("ibkr", "flex-token")
+        assert config.get_connection_secret("ibkr") == "flex-token"
+        assert config.delete_connection_secret("ibkr") is True
+        assert config.get_connection_secret("ibkr") is None
+
+    def test_secrets_are_namespaced_per_connection(self, stub_keyring):
+        config.set_connection_secret("a", "tok-a")
+        config.set_connection_secret("b", "tok-b")
+        assert config.get_connection_secret("a") == "tok-a"
+        assert config.get_connection_secret("b") == "tok-b"
+
+    def test_connection_secret_separate_from_token(self, stub_keyring):
+        config.set_token_in_keyring("ynab-token")
+        config.set_connection_secret("ibkr", "flex-token")
+        assert config.get_token_from_keyring() == "ynab-token"
+        assert config.get_connection_secret("ibkr") == "flex-token"
