@@ -161,6 +161,7 @@ skips the prompt.
 - Token: OS keychain, service `ynab-reconciler`, account `default`.
   - macOS: `security find-generic-password -s ynab-reconciler`
   - Linux: `secret-tool lookup service ynab-reconciler username default`
+- Connection tokens: same keychain service, account `connection:<name>`.
 
 ### Precedence
 
@@ -176,6 +177,47 @@ ynab-reconciler payees           --plan <plan-id>
 ynab-reconciler category-groups  --plan <plan-id>
 ynab-reconciler accounts         --plan <plan-id>
 ```
+
+## Connections — fetch balances automatically
+
+Instead of typing a statement balance for an account you keep on-budget, you can
+**pair it with a connection** that fetches the balance for you. The first
+supported provider is **Interactive Brokers** via the read-only **Flex Web
+Service**.
+
+Why Flex (and not the TWS/Gateway API): a Flex token can *only* retrieve a
+pre-defined report — it can't place orders, move funds, or change anything. It's
+plain HTTPS, so the tool stays a one-shot CLI (cron/CI-friendly) with no daemon
+and no IBKR username/password. The data is **end-of-day**, not real-time — fine
+for budgeting.
+
+**Set up the report in IBKR first:** in Client Portal go to *Settings →
+Reporting → Flex Web Service*, enable it (you get a **token**), and build an
+**Activity Flex Query** that includes the Cash Report / Net Asset Value section.
+Note the query's **query ID**.
+
+Then, in the tool:
+
+```bash
+ynab-reconciler connections add        # name it, paste token (→ keychain) + query id
+ynab-reconciler connections fetch ibkr # see the balances it reports (--json to pipe)
+ynab-reconciler connections pair       # link a YNAB account → a broker account + figure
+```
+
+| Command                      | What it does                                                          |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `connections add`            | Add a connection; token goes to the OS keychain, never the config.   |
+| `connections list`           | Show configured connections and their paired YNAB accounts.          |
+| `connections remove <name>`  | Delete a connection, its stored token, and any pairings using it.    |
+| `connections fetch <name>`   | Fetch and print current balances (`--json` for piping).              |
+| `connections pair`           | Interactive loop: pick an account (paired ones are marked ✓), choose a connection + broker account, or remove its pairing; repeats until you quit. |
+| `connections unpair`         | Remove a pairing directly (handy for scripts).                        |
+
+The default figure is **net liquidation** (total account value); choose **cash**
+at pair time instead if you only keep the cash portion on-budget. Once paired,
+`reconcile` fetches the connection once per run and pre-fills that account's
+statement prompt — press **Enter** to accept, or type over it as usual. If the
+fetch fails, you just get a warning and can enter the balance by hand.
 
 ## Usage
 
@@ -201,6 +243,8 @@ for the actual statement balance. At the prompt:
 - Append a currency code to convert, e.g. `1000 EUR` (uses live Frankfurter
   rates against the plan's native currency).
 - Type `s` to skip an account, `q` to quit.
+- For accounts paired with a [connection](#connections--fetch-balances-automatically),
+  the prompt is pre-filled with the fetched balance — Enter accepts it.
 
 Useful flags:
 

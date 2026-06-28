@@ -1,0 +1,25 @@
+<FlexQueryResponse queryName="Balances" type="AF">
+<FlexStatements count="2">
+<FlexStatement accountId="U1111111" fromDate="20240101" toDate="20240131" period="LastMonth" whenGenerated="20240201;120000">
+<AccountInformation accountId="U1111111" currency="USD" name="Main Brokerage" />
+<CashReport>
+<CashReportCurrency accountId="U1111111" currency="BASE_SUMMARY" endingCash="12000.00" />
+<CashReportCurrency accountId="U1111111" currency="USD" endingCash="10000.00" />
+<CashReportCurrency accountId="U1111111" currency="EUR" endingCash="1800.00" />
+</CashReport>
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U1111111" acctAlias="Main-Brokerage" reportDate="20240130" total="49000.00" cash="11000.00" currency="USD" />
+<EquitySummaryByReportDateInBase accountId="U1111111" acctAlias="Main-Brokerage" reportDate="20240131" total="50000.00" cash="12000.00" currency="USD" />
+</EquitySummaryInBase>
+</FlexStatement>
+<FlexStatement accountId="U2222222" fromDate="20240101" toDate="20240131" period="LastMonth" whenGenerated="20240201;120000">
+<AccountInformation accountId="U2222222" currency="EUR" name="Euro Account" />
+<CashReport>
+<CashReportCurrency accountId="U2222222" currency="BASE_SUMMARY" endingCash="5000.00" />
+</CashReport>
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U2222222" reportDate="20240131" total="25000.00" cash="5000.00" currency="EUR" />
+</EquitySummaryInBase>
+</FlexStatement>
+</FlexStatements>
+</FlexQueryResponse>

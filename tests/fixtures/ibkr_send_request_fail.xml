@@ -1,0 +1,5 @@
+<FlexStatementResponse timestamp="01 February, 2024 12:00 PM EST">
+<Status>Fail</Status>
+<ErrorCode>1012</ErrorCode>
+<ErrorMessage>Token has expired.</ErrorMessage>
+</FlexStatementResponse>

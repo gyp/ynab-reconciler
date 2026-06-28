@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional, Union
+from typing import Any, Callable, Iterator, Optional, Sequence, TypeVar, Union
 
 import click
 import questionary
@@ -469,25 +469,44 @@ def show_account_header(account: Account, native_iso: Optional[str]) -> None:
 StatementAnswer = Union[str, tuple[float, Optional[str]]]
 
 
-def ask_statement_balance(account: Account) -> StatementAnswer:
+def ask_statement_balance(
+    account: Account,
+    *,
+    default: Optional[tuple[float, Optional[str], str]] = None,
+    default_native: Optional[str] = None,
+) -> StatementAnswer:
     """Returns 'skip' | 'quit' | (amount_in_units, iso_or_None).
 
-    Empty input means "accept the cleared balance as-is".
+    Empty input means "accept the cleared balance as-is". When `default` is given
+    as (value, currency, source_label) — e.g. a balance fetched from a paired
+    connection — the prompt is pre-filled with that figure; pressing Enter accepts
+    it, and the value flows through the same parse/convert path as typed input.
+    `default_native`, if given, is a pre-formatted budget-currency equivalent
+    (e.g. "≈ 6,619,782 HUF") shown in parentheses next to the displayed default;
+    the input field still holds the broker-currency amount.
     """
     prompt_label = "Statement balance"
-    instruction = "(Enter = accept · s = skip · q = back to menu)"
+    if default is not None:
+        value, ccy, source = default
+        prefill = f"{value:.2f} {ccy}" if ccy else f"{value:.2f}"
+        shown = f"{prefill} ({default_native})" if default_native else prefill
+        instruction = f"(Enter = {source} {shown} · s = skip · q = back to menu)"
+    else:
+        prefill = ""
+        instruction = "(Enter = accept · s = skip · q = back to menu)"
 
     if not is_interactive():
-        raw = click.prompt(
-            f"  {prompt_label} [Enter to accept, s=skip, q=back to menu]",
-            default="",
-            show_default=False,
-        ).strip()
+        if default is not None:
+            label = f"  {prompt_label} [Enter to accept {shown}, s=skip, q=back to menu]"
+        else:
+            label = f"  {prompt_label} [Enter to accept, s=skip, q=back to menu]"
+        raw = click.prompt(label, default=prefill, show_default=False).strip()
         return _interpret_balance_input(raw, account)
 
     while True:
         raw = questionary.text(
             prompt_label,
+            default=prefill,
             instruction=instruction,
             style=QUESTIONARY_STYLE,
             qmark="❯",
@@ -696,6 +715,140 @@ def prompt_password(label: str) -> str:
     return answer
 
 
+def prompt_text(label: str, *, default: str = "") -> str:
+    """Plain text prompt. Falls back to click on non-TTY."""
+    if not is_interactive():
+        return click.prompt(
+            label, default=default, show_default=bool(default)
+        ).strip()
+    answer = questionary.text(
+        label,
+        default=default,
+        style=QUESTIONARY_STYLE,
+        qmark="❯",
+    ).ask()
+    if answer is None:
+        raise click.Abort()
+    return answer.strip()
+
+
+_T = TypeVar("_T")
+
+# Sentinel returned by select_from when the user bails out of a cancellable
+# picker (via the Cancel entry, Esc, or Ctrl-C). Typed Any so it stays
+# assignable to the generic return without forcing callers' types wider.
+CANCEL: Any = object()
+
+
+def select_from(
+    label: str,
+    options: Sequence[_T],
+    to_label: Callable[[_T], str],
+    *,
+    default: Optional[_T] = None,
+    cancel: Optional[str] = None,
+    extra: Optional[Sequence[tuple[str, Any]]] = None,
+    style_for: Optional[Callable[[_T], str]] = None,
+) -> _T:
+    """Generic single-select over an arbitrary list, returning the chosen item.
+
+    Mirrors the picker UX (type-to-search on a TTY, numbered prompt otherwise).
+    `default`, if among `options`, starts the cursor there (and is the numbered
+    prompt's default on non-TTY). `extra` lists additional trailing entries as
+    (label, return_value) pairs — selecting one returns its value (e.g. a
+    "Remove pairing" sentinel). When `cancel` is a label, a final entry is
+    offered (and Esc/Ctrl-C honoured) that returns the `CANCEL` sentinel so
+    callers can let the user back out. `style_for` maps an option to a
+    prompt-toolkit style for its row (e.g. green for already-paired items); put
+    any glyph in `to_label` so it also shows on non-TTY.
+    """
+    if not options:
+        raise click.UsageError(f"Nothing to choose from for: {label}")
+    has_default = default is not None and default in options
+    # Trailing special entries, in display order: caller `extra` then `cancel`.
+    specials: list[tuple[str, Any]] = list(extra or [])
+    if cancel is not None:
+        specials.append((cancel, CANCEL))
+
+    if not is_interactive():
+        click.echo(f"\n{label}:")
+        for i, opt in enumerate(options, 1):
+            marker = " ←" if has_default and opt == default else ""
+            click.echo(f"  {i:>2}. {to_label(opt)}{marker}")
+        for j, (slabel, _value) in enumerate(specials, len(options) + 1):
+            click.echo(f"  {j:>2}. {slabel}")
+        default_idx = str(list(options).index(default) + 1) if has_default else "1"
+        while True:
+            raw = click.prompt("Select", default=default_idx).strip()
+            try:
+                idx = int(raw)
+            except ValueError:
+                click.echo(f"  Invalid selection: {raw}", err=True)
+                continue
+            if 1 <= idx <= len(options):
+                return options[idx - 1]
+            if len(options) < idx <= len(options) + len(specials):
+                return specials[idx - len(options) - 1][1]
+            click.echo(f"  Out of range: {idx}", err=True)
+
+    choices: list[Union[questionary.Choice, questionary.Separator]] = [
+        questionary.Choice(
+            title=_SearchableTitle(
+                [(style_for(o) if style_for else "class:answer", to_label(o))]
+            ),
+            value=o,
+        )
+        for o in options
+    ]
+    if specials:
+        choices.append(questionary.Separator("  ─────"))
+        for slabel, value in specials:
+            choices.append(
+                questionary.Choice(
+                    title=_SearchableTitle([("class:instruction", slabel)]),
+                    value=value,
+                )
+            )
+    instruction = "(↑/↓ move · Enter pick · type to search"
+    instruction += " · Esc cancel)" if cancel is not None else ")"
+    question = questionary.select(
+        label,
+        choices=choices,
+        style=QUESTIONARY_STYLE,
+        qmark="❯",
+        instruction=instruction,
+        use_search_filter=True,
+        use_jk_keys=False,
+        default=default if has_default else None,
+    )
+    if cancel is not None:
+        _bind_escape(question)
+    answer = question.ask()
+    if answer is None and cancel is not None:
+        # Esc / Ctrl-C on a cancellable picker → treat as cancel, not abort.
+        return CANCEL
+    if answer is None:
+        raise click.Abort()
+    return answer
+
+
+def _bind_escape(question) -> None:
+    """Make Esc cancel a questionary select (it binds only Ctrl-C/Ctrl-Q itself).
+
+    Non-eager so multi-byte arrow-key sequences (which begin with Esc) still
+    work; a lone Esc fires after prompt_toolkit's flush timeout. Best-effort:
+    if questionary's internals shift, the Cancel entry and Ctrl-C still cover it.
+    """
+    try:
+        from prompt_toolkit.keys import Keys
+
+        @question.application.key_bindings.add(Keys.Escape)
+        def _(event):
+            event.app.exit(exception=KeyboardInterrupt)
+    except Exception:
+        pass
+
+
 def confirm(question: str, *, default: bool = True) -> bool:
     if not is_interactive():
         return click.confirm(question, default=default)
@@ -790,6 +943,9 @@ __all__ = [
     "show_run_summary",
     "spinner",
     "prompt_password",
+    "prompt_text",
+    "select_from",
+    "CANCEL",
     "confirm",
     "confirm_save_default",
     "show_saved_default",
